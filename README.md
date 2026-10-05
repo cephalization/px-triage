@@ -23,6 +23,13 @@ Or without installing: `npx @cephalization/px-triage --help`. You need Node
 via `GITHUB_TOKEN` or a logged-in `gh`. The repository defaults to the git
 `origin` of your current directory.
 
+**The queue is a label.** px-triage works on issues and PRs that carry a
+`triage` label, and removes it as each one is handled. Your repository needs
+to apply that label to new items, either by hand or through automation such
+as an issue-form `labels:` field or a `actions/labeler` / `issues: opened`
+workflow. A different label name can be set with `--label` or per repo in the
+config.
+
 Built with Effect 4 (`effect/cli`, `effect/http`) and the `@typesafe-ai/sdk`.
 
 ## The problem it solves
