@@ -5,8 +5,8 @@ Built with **Effect 4** (`effect/cli`, `effect/http`, `effect/observability`)
 and **TypeSafe Jev** for the judgement calls.
 
 ```
-ISSUE #16760 [3/26]  [BUG]: compare page shows +0% when the change is undefined
-by 4ktLuffy · opened 1d ago · 0 comments
+ISSUE #1234 [3/26]  [BUG]: Example page shows the wrong value when the input is empty
+by some-contributor · opened 1d ago · 0 comments
  triage
 ────────────────────────────────────────────────────────────────────────────
   ### Where do you use Phoenix …
@@ -22,9 +22,9 @@ jev jev-1.13.0 · 412ms · 1830 tok
   → suggest Bug → label + assign
     · severity level 1 (71% confident)
     labels  bug  c/ui  language: typescript  priority: medium
-    owners  @cephalization @mikeldking @rickarize
+    owners  @maintainer-one @maintainer-two @maintainer-three
 
-  [Enter] accept suggestion   [i] Needs information   [b] Bug   [f] Feature   [c] Close   [s] Skip   [v] View markdown   [o] Open in browser   [q] Quit
+  [Enter] accept suggestion   [m] accept, assign @you   [a] accept, choose assignee   [i] Needs information   [b] Bug   [f] Feature   [c] Close   [s] Skip   [v] View markdown   [o] Open in browser   [q] Quit
 ```
 
 ## How it works
@@ -81,7 +81,7 @@ Environment overrides: `TYPESAFE_API_KEY`, `PX_TRIAGE_MODEL`, `PX_TRIAGE_REPO`,
 ```bash
 pnpm triage                          # walk the queue
 pnpm triage -- --only prs --dry-run  # preview PR triage, change nothing
-pnpm triage -- --number 16760        # one item
+pnpm triage -- --number 1234         # one item
 pnpm triage -- train --limit 200     # replay history, report agreement
 pnpm triage -- init                  # redo onboarding
 pnpm test                            # planner unit tests

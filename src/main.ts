@@ -83,7 +83,7 @@ const triage = Command.make(
   Command.withExamples([
     { command: "px-triage", description: "Walk the triage queue (Enter accepts Jev's suggestion)" },
     { command: "px-triage --only prs --dry-run", description: "Preview PR triage without touching GitHub" },
-    { command: "px-triage --number 16760", description: "Triage one specific issue" },
+    { command: "px-triage --number 1234", description: "Triage one specific issue" },
     { command: "px-triage train --limit 200", description: "Replay triaged history and report agreement" }
   ])
 )
