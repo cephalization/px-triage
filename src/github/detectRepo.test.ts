@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { repoFromUrl } from "../classify/Classifier.ts"
 import { parseGitHubRemote } from "./detectRepo.ts"
 
 describe("parseGitHubRemote", () => {
@@ -10,5 +11,12 @@ describe("parseGitHubRemote", () => {
   })
   it("rejects non-GitHub remotes", () => {
     expect(parseGitHubRemote("git@gitlab.com:owner/repo.git")).toBeNull()
+  })
+})
+
+describe("repoFromUrl", () => {
+  it("extracts owner/name from issue and PR URLs", () => {
+    expect(repoFromUrl("https://github.com/Arize-ai/phoenix/issues/16760")).toBe("Arize-ai/phoenix")
+    expect(repoFromUrl("https://github.com/Arize-ai/openinference/pull/12")).toBe("Arize-ai/openinference")
   })
 })

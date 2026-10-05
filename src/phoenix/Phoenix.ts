@@ -55,6 +55,8 @@ export interface HumanFeedback {
 
 /** A human decision read back from Phoenix (the shared source of truth). */
 export interface RemoteDecision {
+  /** owner/name, lower-cased; from the span's `repo` attribute or its metadata URL. */
+  readonly repo: string | null
   readonly number: number
   readonly kind: "issue" | "pull_request" | null
   readonly chosen: string
@@ -76,8 +78,8 @@ export class Phoenix extends Context.Service<Phoenix, {
   readonly annotateClassification: (spanId: string, feedback: HumanFeedback) => Effect.Effect<void>
   /** Create the dataset if needed and append examples not already present (by metadata.number). */
   readonly upsertDataset: (name: string, description: string, examples: ReadonlyArray<Example>) => Effect.Effect<{ datasetId: string; added: number; total: number }, PhoenixError>
-  /** Every `triage.human` annotation in the project, newest first, from all users. */
-  readonly listHumanDecisions: Effect.Effect<ReadonlyArray<RemoteDecision>, PhoenixError>
+  /** Every `triage.human` annotation in the project for one repo, newest first, from all users. */
+  readonly listHumanDecisions: (repoSlug: string) => Effect.Effect<ReadonlyArray<RemoteDecision>, PhoenixError>
   /** Record learned settings as "applied" on the experiment they came from (shared with the team). */
   readonly publishLearned: (applied: AppliedLearned) => Effect.Effect<void, PhoenixError>
   /** Newest applied learnings for a dataset, or null. */
@@ -93,7 +95,7 @@ export class Phoenix extends Context.Service<Phoenix, {
           client: null,
           annotateClassification: () => Effect.void,
           upsertDataset: () => Effect.fail(new PhoenixError({ message: PHOENIX_SETUP_HINT })),
-          listHumanDecisions: Effect.succeed([]),
+          listHumanDecisions: () => Effect.succeed([]),
           publishLearned: () => Effect.fail(new PhoenixError({ message: PHOENIX_SETUP_HINT })),
           fetchAppliedLearned: () => Effect.succeed(null),
           datasetUrl: () => ""
@@ -138,10 +140,11 @@ export class Phoenix extends Context.Service<Phoenix, {
 
       const project = { projectName: config.projectName }
 
-      const listHumanDecisions = Effect.tryPromise({
+      const listHumanDecisions = (repoSlug: string) => Effect.tryPromise({
         try: async () => {
-          // Classify spans carry github.number; annotations hang off them.
-          const spans: Array<{ spanId: string; number: number; kind: "issue" | "pull_request" | null }> = []
+          const wanted = repoSlug.toLowerCase()
+          // Classify spans carry github.number and repo; annotations hang off them.
+          const spans: Array<{ spanId: string; number: number; kind: "issue" | "pull_request" | null; repo: string | null }> = []
           for (const name of ["triage.classify", "Classifier.classify"]) {
             let cursor: string | null = null
             do {
@@ -150,12 +153,24 @@ export class Phoenix extends Context.Service<Phoenix, {
                 const attrs = (sp.attributes ?? {}) as Record<string, unknown>
                 const n = attrs["github.number"] ?? attrs["number"]
                 if (typeof n !== "number") continue
-                // Older spans only carried the kind inside the metadata JSON.
+                // Older spans only carried the kind (and the URL) inside the metadata JSON.
                 let kind = attrs["github.kind"] ?? attrs["kind"]
-                if (kind === undefined && typeof attrs["metadata"] === "string") {
-                  try { kind = (JSON.parse(attrs["metadata"]) as Record<string, unknown>)["kind"] } catch { /* ignore */ }
+                let repo: string | null = typeof attrs["repo"] === "string" ? attrs["repo"].toLowerCase() : null
+                if (typeof attrs["metadata"] === "string") {
+                  try {
+                    const meta = JSON.parse(attrs["metadata"]) as Record<string, unknown>
+                    if (kind === undefined) kind = meta["kind"]
+                    if (repo === null && typeof meta["url"] === "string") {
+                      const m = /github\.com\/([^/]+)\/([^/]+)\//.exec(meta["url"])
+                      if (m) repo = `${m[1]}/${m[2]}`.toLowerCase()
+                    }
+                  } catch { /* ignore */ }
                 }
-                spans.push({ spanId: sp.context.span_id, number: n, kind: kind === "issue" || kind === "pull_request" ? kind : null })
+                // Spans from before repo tagging are assumed to belong to the requested repo only
+                // when it is the original default; otherwise they are skipped.
+                if (repo === null && wanted !== "arize-ai/phoenix") continue
+                if (repo !== null && repo !== wanted) continue
+                spans.push({ spanId: sp.context.span_id, number: n, kind: kind === "issue" || kind === "pull_request" ? kind : null, repo })
               }
               cursor = res.nextCursor ?? null
             } while (cursor)
@@ -172,6 +187,7 @@ export class Phoenix extends Context.Service<Phoenix, {
                 if (!sp || !a.result?.label) continue
                 const m = (a.metadata ?? {}) as Record<string, unknown>
                 out.push({
+                  repo: sp.repo ?? wanted,
                   number: sp.number,
                   kind: sp.kind,
                   chosen: a.result.label,

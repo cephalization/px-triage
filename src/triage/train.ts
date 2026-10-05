@@ -84,7 +84,7 @@ export const runTrain = Effect.fnUntraced(function*(options: TrainOptions) {
   // Phoenix annotations are the shared source of truth (every teammate's
   // decisions); the local log only fills in anything that never made it there.
   const t0 = performance.now()
-  const remote = yield* phoenix.listHumanDecisions
+  const remote = yield* phoenix.listHumanDecisions(slug)
   const local = (yield* readDecisions).filter((d) => d.repo === slug && !d.dryRun && d.chosen !== "skip")
   const decisions: Array<Decision> = [
     ...remote.map(toDecision(slug)),

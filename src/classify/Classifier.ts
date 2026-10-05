@@ -216,10 +216,16 @@ const toScored = (r: {
 
 const clip = (s: string, max: number) => (s.length <= max ? s : s.slice(0, max) + `\n…[truncated ${s.length - max} chars]`)
 
+/** "owner/name" from a GitHub issue or PR URL. */
+export const repoFromUrl = (url: string): string => {
+  const m = /github\.com\/([^/]+)\/([^/]+)\//.exec(url)
+  return m ? `${m[1]}/${m[2]}` : "unknown"
+}
+
 /** Structured state: named fields help the model find what each question needs. */
 export const toState = (item: TriageItem) => ({
   kind: item.kind === "pull_request" ? "pull_request" : "issue",
-  repository: "Arize-ai/phoenix",
+  repository: repoFromUrl(item.url),
   number: item.number,
   title: item.title,
   author: {
