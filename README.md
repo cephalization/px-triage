@@ -1,10 +1,27 @@
 # px-triage
 
+[![npm version](https://img.shields.io/npm/v/%40cephalization%2Fpx-triage?logo=npm&label=%40cephalization%2Fpx-triage)](https://www.npmjs.com/package/@cephalization/px-triage)
+[![CI](https://github.com/cephalization/px-triage/actions/workflows/ci.yml/badge.svg)](https://github.com/cephalization/px-triage/actions/workflows/ci.yml)
+[![Node 22.12+](https://img.shields.io/node/v/%40cephalization%2Fpx-triage)](https://nodejs.org)
+[![license: MIT](https://img.shields.io/npm/l/%40cephalization%2Fpx-triage)](LICENSE)
+
 A keyboard-driven CLI for triaging a GitHub repository's new issues and pull
 requests. A decision model (TypeSafe Jev) reads each item and proposes the
 next step; you confirm it with one key or override it. GitHub changes run in
 the background, every decision is logged, and every classification is traced
 to Phoenix.
+
+## Quick start
+
+```bash
+npm install -g @cephalization/px-triage   # installs `px-triage` and the short alias `pxt`
+cd your/repo && pxt                        # first run asks for a TypeSafe key (and, optionally, Phoenix)
+```
+
+Or without installing: `npx @cephalization/px-triage --help`. You need Node
+22.12+, a [TypeSafe API key](https://console.typesafe.ai/keys), and GitHub auth
+via `GITHUB_TOKEN` or a logged-in `gh`. The repository defaults to the git
+`origin` of your current directory.
 
 Built with Effect 4 (`effect/cli`, `effect/http`) and the `@typesafe-ai/sdk`.
 
@@ -86,15 +103,8 @@ duplicates of it with cross-referencing comments.
 
 ## Install
 
-```bash
-npm install -g @cephalization/px-triage   # provides `px-triage` and the short alias `pxt`
-pxt                                        # first run walks through onboarding
-```
-
-Or try it without installing: `npx @cephalization/px-triage --help`. Needs
-Node 22.12+. The repository defaults to the `origin` of the git checkout in
-your current directory, so `cd` into a repo and run `pxt`; `--repo owner/name`
-or the config value override it.
+See the [quick start](#quick-start) above. `--repo owner/name` or the config
+value override the detected repository.
 
 ### Developing
 
