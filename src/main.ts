@@ -1,5 +1,6 @@
 import { NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Console, Effect, Layer, Option } from "effect"
+import { HttpClient } from "effect/http"
 import { Command, Flag } from "effect/cli"
 import { Classifier } from "./classify/Classifier.ts"
 import { AppConfig, CONFIG_FILE, runOnboarding, writeConfig } from "./config/AppConfig.ts"
@@ -31,7 +32,11 @@ const appLayer = (repo: Repo, input: { readonly model: Option.Option<string>; re
   Layer.unwrap(
     Effect.gen(function*() {
       const { config } = yield* AppConfig
-      const github = GitHub.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
+      // No http.client spans: GitHub calls are already wrapped in TOOL spans where they matter.
+      const github = GitHub.layer.pipe(
+        Layer.provide(Layer.succeed(HttpClient.TracerDisabledWhen, () => true)),
+        Layer.provide(NodeHttpClient.layerUndici)
+      )
       // The project description lives in config; seed it from GitHub if missing.
       const context = yield* resolveRepoContext(repo).pipe(Effect.provide(github))
       const services = Layer.mergeAll(Executor.layer({ dryRun: input.dryRun }), RepoProfiles.layer, Phoenix.layer(config.phoenix)).pipe(

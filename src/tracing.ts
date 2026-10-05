@@ -27,7 +27,7 @@ import {
 import { context as otelContext, type Span as OtelSpan, SpanKind, SpanStatusCode, trace as otelTrace } from "@opentelemetry/api"
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto"
 import { resourceFromAttributes } from "@opentelemetry/resources"
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
+import { BatchSpanProcessor, type ReadableSpan, type Span as SdkSpan, type SpanProcessor } from "@opentelemetry/sdk-trace-base"
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node"
 import { ATTR_HTTP_RESPONSE_STATUS_CODE, ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions"
 import { APIError, type Questions, type RequestOptions, type SystemOneRequest, type SystemOneResult, type TypeSafeClient } from "@typesafe-ai/sdk"
@@ -36,6 +36,30 @@ import type { PhoenixConfig } from "./config/AppConfig.ts"
 
 export const SERVICE_NAME = "px-triage"
 export const VERSION = "0.1.0"
+
+/**
+ * Only OpenInference spans reach Phoenix. Anything without
+ * `openinference.span.kind` (HTTP client spans, internal Effect spans) is
+ * dropped at export so the project shows triage, decision, and tool spans only.
+ */
+class OpenInferenceOnly implements SpanProcessor {
+  private readonly inner: SpanProcessor
+  constructor(inner: SpanProcessor) {
+    this.inner = inner
+  }
+  onStart(span: SdkSpan, parentContext: Parameters<SpanProcessor["onStart"]>[1]): void {
+    this.inner.onStart(span, parentContext)
+  }
+  onEnd(span: ReadableSpan): void {
+    if (span.attributes[SemanticConventions.OPENINFERENCE_SPAN_KIND] !== undefined) this.inner.onEnd(span)
+  }
+  forceFlush(): Promise<void> {
+    return this.inner.forceFlush()
+  }
+  shutdown(): Promise<void> {
+    return this.inner.shutdown()
+  }
+}
 
 const setupProvider = (phoenix: PhoenixConfig) => {
   const headers: Record<string, string> = phoenix.apiKey
@@ -48,9 +72,11 @@ const setupProvider = (phoenix: PhoenixConfig) => {
       [ATTR_SERVICE_VERSION]: VERSION
     }),
     spanProcessors: [
-      new BatchSpanProcessor(
-        new OTLPTraceExporter({ url: `${phoenix.url.replace(/\/+$/, "")}/v1/traces`, headers }),
-        { scheduledDelayMillis: 500 }
+      new OpenInferenceOnly(
+        new BatchSpanProcessor(
+          new OTLPTraceExporter({ url: `${phoenix.url.replace(/\/+$/, "")}/v1/traces`, headers }),
+          { scheduledDelayMillis: 500 }
+        )
       )
     ]
   })

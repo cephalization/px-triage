@@ -85,7 +85,7 @@ export class RepoProfiles extends Context.Service<RepoProfiles, {
       const isFresh = (p: RepoProfile) =>
         p.format === PROFILE_FORMAT && Date.now() - new Date(p.generatedAt).getTime() < PROFILE_TTL_DAYS * 86_400_000
 
-      const load = Effect.fn("RepoProfiles.load")(function*(repo: Repo, options?: { readonly refresh?: boolean }) {
+      const load = Effect.fnUntraced(function*(repo: Repo, options?: { readonly refresh?: boolean }) {
         if (!options?.refresh) {
           const cached = yield* read(repo)
           if (cached._tag === "Some" && isFresh(cached.value)) return cached.value

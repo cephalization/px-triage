@@ -10,7 +10,7 @@ import { type Repo, repoSlug } from "../github/model.ts"
 import { dim, yellow } from "../ui/ansi.ts"
 import { AppConfig, CONFIG_FILE } from "./AppConfig.ts"
 
-export const resolveRepoContext = Effect.fn("resolveRepoContext")(function*(repo: Repo) {
+export const resolveRepoContext = Effect.fnUntraced(function*(repo: Repo) {
   const appConfig = yield* AppConfig
   const slug = repoSlug(repo)
   const saved = appConfig.repoConfig(slug).description?.trim()
