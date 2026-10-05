@@ -12,24 +12,26 @@
  */
 import { Cause, Console, Deferred, Effect, Exit, Option, Terminal } from "effect"
 import { Chunk } from "effect"
+import { OtelTracer } from "@effect/opentelemetry"
+import { PHOENIX_SETUP_URL, Phoenix } from "../phoenix/Phoenix.ts"
 import { Prompt } from "effect/cli"
 import { OpenInferenceSpanKind, SemanticConventions } from "@arizeai/openinference-semantic-conventions"
-import { type Assessment, Classifier, type ClassifyError } from "../classify/Classifier.js"
-import { GitHub, GitHubError, type QueueFilter } from "../github/GitHub.js"
-import { type Repo, type TriageItem, repoSlug } from "../github/model.js"
-import { bold, cyan, dim, green, red, yellow } from "../ui/ansi.js"
-import { type Hotkey, hotkeyMenu } from "../ui/keys.js"
-import { renderMarkdown } from "../ui/markdown.js"
-import { page } from "../ui/pager.js"
-import { editText, openInBrowser } from "../ui/prompts.js"
-import { renderAssessment, renderBody, renderHeader, renderReport } from "../ui/render.js"
-import { appendDecision, makeDecision, readDecisions } from "./decisions.js"
-import { Executor, type ResolvedPlan, describe } from "./executor.js"
-import { isMaintainer, propagate } from "./links.js"
-import { ACTION_TITLES, type ActionKind, type TriagePlan, suggestPlan } from "./plan.js"
-import { type RepoProfile, RepoProfiles, labelColors } from "./profile.js"
-import { TRIAGE_LABEL, WORKFLOW_LABEL_ALIASES, type WorkflowLabelKey, workflowLabel } from "./roster.js"
-import { CLOSE_TEMPLATES, NEEDS_INFO_TEMPLATES, type Template, renderTemplate, templatesFor } from "./templates.js"
+import { type Assessment, Classifier, type ClassifyError } from "../classify/Classifier.ts"
+import { GitHub, GitHubError, type QueueFilter } from "../github/GitHub.ts"
+import { type Repo, type TriageItem, repoSlug } from "../github/model.ts"
+import { bold, cyan, dim, green, red, yellow } from "../ui/ansi.ts"
+import { type Hotkey, hotkeyMenu } from "../ui/keys.ts"
+import { renderMarkdown } from "../ui/markdown.ts"
+import { page } from "../ui/pager.ts"
+import { editText, openInBrowser } from "../ui/prompts.ts"
+import { renderAssessment, renderBody, renderHeader, renderReport } from "../ui/render.ts"
+import { appendDecision, makeDecision, readDecisions } from "./decisions.ts"
+import { Executor, type ResolvedPlan, describe } from "./executor.ts"
+import { isMaintainer, propagate } from "./links.ts"
+import { ACTION_TITLES, type ActionKind, type TriagePlan, suggestPlan } from "./plan.ts"
+import { type RepoProfile, RepoProfiles, labelColors } from "./profile.ts"
+import { TRIAGE_LABEL, WORKFLOW_LABEL_ALIASES, type WorkflowLabelKey, workflowLabel } from "./roster.ts"
+import { CLOSE_TEMPLATES, NEEDS_INFO_TEMPLATES, type Template, renderTemplate, templatesFor } from "./templates.ts"
 
 export interface SessionOptions {
   readonly repo: Repo
@@ -47,13 +49,14 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
   const github = yield* GitHub
   const classifier = yield* Classifier
   const executor = yield* Executor
+  const phoenix = yield* Phoenix
   const slug = repoSlug(options.repo)
   // One Phoenix session per CLI run so every item's traces group together.
   const sessionId = `px-triage-${new Date().toISOString()}`
   const classifyAttrs = { [SemanticConventions.SESSION_ID]: sessionId, repo: slug }
 
   // ---- Boot: everything independent runs concurrently, each step reports when done.
-  const [me, profile, queue] = yield* Effect.all(
+  const [me, profile0, queue] = yield* Effect.all(
     [
       step("github user", github.viewer.pipe(Effect.orElseSucceed(() => null)), (login) => (login ? `@${login}` : "unknown")),
       step("repo profile", (yield* RepoProfiles).load(options.repo), (p) => `${p.teammates.length} teammates · ${p.labels.length} labels`),
@@ -67,6 +70,11 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
     ],
     { concurrency: 3 }
   )
+  if (!phoenix.enabled) {
+    yield* Console.log(`${dim("·")} ${"phoenix".padEnd(13)} ${dim(`off · tracing and training need Phoenix: ${PHOENIX_SETUP_URL}`)}`)
+  }
+  // Adopt the team's applied learnings when they differ from the local copy.
+  const profile = yield* syncLearned(profile0, options.repo)
   const colors = labelColors(profile)
 
   const { numbers: initialNumbers, dropped, deferred: deferredCount } = Option.isSome(options.number)
@@ -93,12 +101,16 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
   // ---- Stream details and classifications. The UI awaits per-item Deferreds.
   const details = new Map<number, Deferred.Deferred<TriageItem, GitHubError>>()
   const assessments = new Map<number, Deferred.Deferred<Assessment, ClassifyError>>()
+  /** OTel span id of each item's triage.classify span, for human-feedback annotations. */
+  const classifySpans = new Map<number, string>()
   for (const n of numbers) {
     details.set(n, yield* Deferred.make<TriageItem, GitHubError>())
     assessments.set(n, yield* Deferred.make<Assessment, ClassifyError>())
   }
   const classify = (item: TriageItem) =>
     Effect.gen(function*() {
+      const otel = yield* OtelTracer.currentOtelSpan.pipe(Effect.option)
+      if (otel._tag === "Some") classifySpans.set(item.number, otel.value.spanContext().spanId)
       const a = yield* classifier.classify(item)
       yield* Effect.annotateCurrentSpan({
         [SemanticConventions.OUTPUT_VALUE]: JSON.stringify({ category: a.category.choice, confidence: a.category.confidence, component: a.component.choice, complete: a.complete, inScope: a.inScope, cached: a.cached ?? false }),
@@ -114,7 +126,8 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
           [SemanticConventions.INPUT_VALUE]: `#${item.number} ${item.title}`,
           [SemanticConventions.INPUT_MIME_TYPE]: "text/plain",
           [SemanticConventions.METADATA]: JSON.stringify({ url: item.url, kind: item.kind }),
-          "github.number": item.number
+          "github.number": item.number,
+          "github.kind": item.kind
         }
       })
     )
@@ -208,6 +221,8 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
     }
     // applied
     yield* executor.submit(options.repo, item, outcome.plan)
+    const selfAssigned = me !== null && outcome.plan.assignees.includes(me)
+    const classifySpanId = classifySpans.get(n)
     yield* appendDecision(
       makeDecision({
         repo: slug,
@@ -217,9 +232,25 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
         chosen: outcome.action,
         labelsAdded: outcome.plan.labelsToAdd,
         assignees: outcome.plan.assignees,
-        dryRun: options.dryRun
+        dryRun: options.dryRun,
+        selfAssigned,
+        classifySpanId
       })
     )
+    // Human feedback lands on the classification span in Phoenix (fire-and-forget).
+    if (classifySpanId && !options.dryRun) {
+      yield* phoenix
+        .annotateClassification(classifySpanId, {
+          chosen: outcome.action,
+          suggested: plan?.action ?? null,
+          accepted: plan !== null && plan.action === outcome.action,
+          labels: outcome.plan.labelsToAdd,
+          assignees: outcome.plan.assignees,
+          selfAssigned,
+          triager: me
+        })
+        .pipe(Effect.forkDetach)
+    }
     handled++
     // Linked items that just received a propagated action are done too: pull
     // them out of the remaining queue and log a decision so the next boot
@@ -238,13 +269,21 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
         const target = yield* Effect.exit(Deferred.await(pending))
         const targetItem = Exit.isSuccess(target) ? target.value : null
         if (!targetItem) continue
+        // The target is a different kind of item, so record the action it
+        // actually received: a PR is reviewed, an issue is labeled as bug/feature.
+        const bugLabel = workflowLabel(profile, "bug")
+        const propagatedAction: ActionKind = p.plan.close
+          ? "close"
+          : targetItem.kind === "pull_request"
+          ? (p.plan.labelsToAdd.includes(workflowLabel(profile, "needsInfo") ?? "") ? "needs_info" : "review")
+          : (bugLabel && p.plan.labelsToAdd.includes(bugLabel) ? "bug" : "feature")
         yield* appendDecision(
           makeDecision({
             repo: slug,
             item: targetItem,
             assessment: null,
             plan: null,
-            chosen: p.plan.close ? "close" : outcome.action,
+            chosen: propagatedAction,
             labelsAdded: p.plan.labelsToAdd,
             assignees: p.plan.assignees,
             dryRun: options.dryRun
@@ -291,6 +330,35 @@ const reconcileQueue = Effect.fnUntraced(function*(
   const front = kept.filter((n) => !skipped.has(n))
   const back = kept.filter((n) => skipped.has(n))
   return { numbers: [...front, ...back], dropped: fetched.length - kept.length, deferred: back.length }
+})
+
+/**
+ * Pull the newest applied learnings from Phoenix (published by `pxt train --apply`,
+ * by anyone on the team) and save them locally when they differ.
+ */
+const syncLearned = Effect.fnUntraced(function*(profile: RepoProfile, repo: Repo) {
+  const phoenix = yield* Phoenix
+  if (!phoenix.enabled) return profile
+  const t0 = performance.now()
+  const applied = yield* phoenix.fetchAppliedLearned(`px-triage/${repoSlug(repo)}`).pipe(Effect.orElseSucceed(() => null))
+  const ms = dim(`${Math.round(performance.now() - t0)}ms`)
+  if (!applied) {
+    yield* Console.log(`${dim("·")} ${"learnings".padEnd(13)} ${dim("none applied yet · run `pxt train --apply`")} ${ms}`)
+    return profile
+  }
+  if (profile.learned?.experimentId === applied.experimentId) {
+    yield* Console.log(`${green("✔")} ${"learnings".padEnd(13)} ${dim(`up to date (experiment ${applied.experimentId.slice(0, 12)}…)`)} ${ms}`)
+    return profile
+  }
+  const updated: RepoProfile = { ...profile, learned: applied.learned }
+  yield* (yield* RepoProfiles).save(repo, updated)
+  const what = [
+    Object.keys(applied.learned.thresholds).length ? `${Object.keys(applied.learned.thresholds).length} threshold${Object.keys(applied.learned.thresholds).length === 1 ? "" : "s"}` : null,
+    Object.keys(applied.learned.policy).length ? `${Object.keys(applied.learned.policy).length} policy rule${Object.keys(applied.learned.policy).length === 1 ? "" : "s"}` : null,
+    Object.keys(applied.learned.owners).length ? `owners for ${Object.keys(applied.learned.owners).length} components` : null
+  ].filter(Boolean).join(", ")
+  yield* Console.log(`${green("✔")} ${"learnings".padEnd(13)} ${dim(`applied from Phoenix${applied.appliedBy ? ` (by @${applied.appliedBy})` : ""}: ${what || "nothing"}`)} ${ms}`)
+  return updated
 })
 
 /** Run a boot step and print `✔ label · detail · Nms` when it finishes. */

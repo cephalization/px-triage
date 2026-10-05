@@ -5,9 +5,9 @@
  */
 import { OpenInferenceSpanKind, SemanticConventions } from "@arizeai/openinference-semantic-conventions"
 import { Context, Effect, Exit, Fiber, Layer, Ref } from "effect"
-import { GitHub, type GitHubError } from "../github/GitHub.js"
-import type { LinkedItem, Repo, TriageItem } from "../github/model.js"
-import type { Propagation } from "./links.js"
+import { GitHub, type GitHubError } from "../github/GitHub.ts"
+import type { LinkedItem, Repo, TriageItem } from "../github/model.ts"
+import type { Propagation } from "./links.ts"
 
 export interface ResolvedPlan {
   readonly labelsToAdd: ReadonlyArray<string>

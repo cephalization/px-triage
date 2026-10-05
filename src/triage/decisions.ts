@@ -4,10 +4,10 @@
  * cases where the questions or thresholds need work.
  */
 import { Effect, FileSystem, Schema } from "effect"
-import type { Assessment } from "../classify/Classifier.js"
-import { CONFIG_DIR, DECISIONS_FILE } from "../config/AppConfig.js"
-import type { TriageItem } from "../github/model.js"
-import type { ActionKind, TriagePlan } from "./plan.js"
+import type { Assessment } from "../classify/Classifier.ts"
+import { CONFIG_DIR, DECISIONS_FILE } from "../config/AppConfig.ts"
+import type { TriageItem } from "../github/model.ts"
+import type { ActionKind, TriagePlan } from "./plan.ts"
 
 export const Decision = Schema.Struct({
   ts: Schema.String,
@@ -26,7 +26,11 @@ export const Decision = Schema.Struct({
   inScope: Schema.NullOr(Schema.Number),
   labelsAdded: Schema.Array(Schema.String),
   assignees: Schema.Array(Schema.String),
-  dryRun: Schema.Boolean
+  dryRun: Schema.Boolean,
+  /** True when the triager assigned themselves (capacity, not ownership). */
+  selfAssigned: Schema.optional(Schema.Boolean),
+  /** OpenTelemetry span id of the triage.classify span, for Phoenix annotations. */
+  classifySpanId: Schema.optional(Schema.String)
 })
 export type Decision = typeof Decision.Type
 
@@ -39,6 +43,8 @@ export const makeDecision = (input: {
   labelsAdded: ReadonlyArray<string>
   assignees: ReadonlyArray<string>
   dryRun: boolean
+  selfAssigned?: boolean
+  classifySpanId?: string | undefined
 }): Decision => ({
   ts: new Date().toISOString(),
   repo: input.repo,
@@ -56,7 +62,9 @@ export const makeDecision = (input: {
   inScope: input.assessment?.inScope ?? null,
   labelsAdded: [...input.labelsAdded],
   assignees: [...input.assignees],
-  dryRun: input.dryRun
+  dryRun: input.dryRun,
+  ...(input.selfAssigned !== undefined ? { selfAssigned: input.selfAssigned } : {}),
+  ...(input.classifySpanId !== undefined ? { classifySpanId: input.classifySpanId } : {})
 })
 
 export const appendDecision = (decision: Decision) =>

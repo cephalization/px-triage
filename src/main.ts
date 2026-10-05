@@ -1,18 +1,19 @@
 import { NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Console, Effect, Layer, Option } from "effect"
 import { Command, Flag } from "effect/cli"
-import { Classifier } from "./classify/Classifier.js"
-import { AppConfig, CONFIG_FILE, runOnboarding, writeConfig } from "./config/AppConfig.js"
-import { GitHub } from "./github/GitHub.js"
-import { type Repo, parseRepo, repoSlug } from "./github/model.js"
-import { resolveRepoContext } from "./config/repoContext.js"
-import { tracingLayer } from "./tracing.js"
-import { Executor } from "./triage/executor.js"
-import { runTrain } from "./triage/history.js"
-import { RepoProfiles } from "./triage/profile.js"
-import { renderProfile } from "./triage/rosterView.js"
-import { banner, isQuit, runSession } from "./triage/session.js"
-import { dim, red } from "./ui/ansi.js"
+import { Classifier } from "./classify/Classifier.ts"
+import { AppConfig, CONFIG_FILE, runOnboarding, writeConfig } from "./config/AppConfig.ts"
+import { GitHub } from "./github/GitHub.ts"
+import { type Repo, parseRepo, repoSlug } from "./github/model.ts"
+import { resolveRepoContext } from "./config/repoContext.ts"
+import { Phoenix } from "./phoenix/Phoenix.ts"
+import { tracingLayer } from "./tracing.ts"
+import { Executor } from "./triage/executor.ts"
+import { runTrain } from "./triage/train.ts"
+import { RepoProfiles } from "./triage/profile.ts"
+import { renderProfile } from "./triage/rosterView.ts"
+import { banner, isQuit, runSession } from "./triage/session.ts"
+import { dim, red } from "./ui/ansi.ts"
 
 const repoFlag = Flag.String("repo").pipe(
   Flag.withAlias("r"),
@@ -33,7 +34,7 @@ const appLayer = (repo: Repo, input: { readonly model: Option.Option<string>; re
       const github = GitHub.layer.pipe(Layer.provide(NodeHttpClient.layerUndici))
       // The project description lives in config; seed it from GitHub if missing.
       const context = yield* resolveRepoContext(repo).pipe(Effect.provide(github))
-      const services = Layer.mergeAll(Executor.layer({ dryRun: input.dryRun }), RepoProfiles.layer).pipe(
+      const services = Layer.mergeAll(Executor.layer({ dryRun: input.dryRun }), RepoProfiles.layer, Phoenix.layer(config.phoenix)).pipe(
         Layer.provideMerge(github),
         Layer.provideMerge(Classifier.layer({ model: Option.getOrUndefined(input.model), cache: !input.noCache, context }))
       )
@@ -103,7 +104,16 @@ const triage = Command.make(
 
 const train = Command.make(
   "train",
-  { repo: repoFlag, label: labelFlag, limit: Flag.Int("limit").pipe(Flag.withAlias("n"), Flag.withDescription("How many past items to replay"), Flag.withDefault(150)), model: modelFlag, concurrency: concurrencyFlag, noTrace: noTraceFlag, noCache: noCacheFlag },
+  {
+    repo: repoFlag,
+    label: labelFlag,
+    limit: Flag.Int("limit").pipe(Flag.withAlias("n"), Flag.withDescription("How many past items to add to the training set"), Flag.withDefault(150)),
+    model: modelFlag,
+    concurrency: concurrencyFlag,
+    noTrace: noTraceFlag,
+    noCache: noCacheFlag,
+    apply: Flag.Boolean("apply").pipe(Flag.withDescription("Write learned thresholds / policy / owners into the repo profile"), Flag.withDefault(false))
+  },
   Effect.fn(function*(input) {
     yield* Console.log(banner() + dim(" · train"))
     const repo = yield* resolveRepo(input.repo)
@@ -111,10 +121,11 @@ const train = Command.make(
       repo,
       label: yield* resolveLabel(repo, input.label),
       limit: input.limit,
-      concurrency: input.concurrency
+      concurrency: input.concurrency,
+      apply: input.apply
     }).pipe(Effect.provide(appLayer(repo, { model: input.model, dryRun: true, noTrace: input.noTrace, noCache: input.noCache })), handleErrors)
   })
-).pipe(Command.withDescription("Replay already-triaged items through Jev and report agreement, confusion, and threshold sweeps"))
+).pipe(Command.withDescription("Build a Phoenix dataset from your decisions + history, run a Jev experiment, report agreement; --apply writes what it learned into the repo profile"))
 
 const roster = Command.make(
   "roster",

@@ -2,11 +2,11 @@
  * Pure routing: turn an Assessment into a suggested TriagePlan.
  * No I/O here so it is trivially unit-testable. Thresholds live in questions.ts.
  */
-import type { Assessment } from "../classify/Classifier.js"
-import { THRESHOLDS as DEFAULT_THRESHOLDS, type ComponentKey, type IssueCategory, type LanguageKey, type PrCategory } from "../classify/questions.js"
-import type { TriageItem } from "../github/model.js"
-import type { RepoProfile } from "./profile.js"
-import { TRIAGE_LABEL, codeownerTeamsFor, priorityLabel, rankTeammates, workflowLabel } from "./roster.js"
+import type { Assessment } from "../classify/Classifier.ts"
+import { THRESHOLDS as DEFAULT_THRESHOLDS, type ComponentKey, type IssueCategory, type LanguageKey, type PrCategory } from "../classify/questions.ts"
+import type { TriageItem } from "../github/model.ts"
+import type { RepoProfile } from "./profile.ts"
+import { TRIAGE_LABEL, codeownerTeamsFor, priorityLabel, rankTeammates, workflowLabel } from "./roster.ts"
 
 export type ActionKind = "needs_info" | "bug" | "feature" | "review" | "close" | "skip"
 
@@ -31,7 +31,20 @@ export type Thresholds = { -readonly [K in keyof typeof DEFAULT_THRESHOLDS]: num
 
 const compact = (labels: ReadonlyArray<string | null>): Array<string> => [...new Set(labels.filter((l): l is string => l !== null))]
 
-export const suggestPlan = (item: TriageItem, a: Assessment, profile: RepoProfile, THRESHOLDS: Thresholds = DEFAULT_THRESHOLDS): TriagePlan => {
+export const suggestPlan = (item: TriageItem, a: Assessment, profile: RepoProfile, overrides?: Partial<Thresholds>): TriagePlan => {
+  // Defaults < learned (from `pxt train`) < explicit overrides (threshold sweeps).
+  const THRESHOLDS: Thresholds = { ...DEFAULT_THRESHOLDS, ...(profile.learned?.thresholds ?? {}), ...(overrides ?? {}) }
+  const base0 = suggestPlanWith(item, a, profile, THRESHOLDS)
+  // Learned policy: when humans consistently chose a different action for this
+  // (kind, category), follow them. Confidence gating still applies.
+  const learnedAction = profile.learned?.policy[`${item.kind}:${a.category.choice}`] as ActionKind | undefined
+  if (learnedAction && learnedAction !== base0.action && learnedAction !== "skip") {
+    return { ...base0, action: learnedAction, rationale: [...base0.rationale, `learned: maintainers usually choose "${learnedAction}" for ${a.category.choice}`] }
+  }
+  return base0
+}
+
+const suggestPlanWith = (item: TriageItem, a: Assessment, profile: RepoProfile, THRESHOLDS: Thresholds): TriagePlan => {
   const rationale: Array<string> = []
   const BUG_LABEL = workflowLabel(profile, "bug")
   const ENHANCEMENT_LABEL = workflowLabel(profile, "enhancement")
@@ -78,7 +91,10 @@ export const suggestPlan = (item: TriageItem, a: Assessment, profile: RepoProfil
       rationale.push(outOfScope ? `in-scope probability ${pct(a.inScope)}` : "classified as off-topic / promotional")
       return { ...base, action: "close", rationale, labelsToAdd: [] }
     }
-    if (incomplete) {
+    // Mechanical PRs (dependency bumps, release chores, test-only changes) have
+    // thin descriptions by nature; asking for more information is never right.
+    const mechanical = cat === "dependency_update" || cat === "refactor_or_chore" || cat === "tests_only"
+    if (incomplete && !mechanical) {
       rationale.push(`description completeness ${pct(a.complete)} is below ${pct(THRESHOLDS.needsInfoBelow)}`)
       return { ...base, action: "needs_info", rationale, labelsToAdd: compact([NEEDS_INFO_LABEL, ...metaLabels]) }
     }

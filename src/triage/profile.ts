@@ -11,13 +11,13 @@
  */
 import { join } from "node:path"
 import { Console, Context, Effect, FileSystem, Layer, Schema } from "effect"
-import type { ComponentKey, LanguageKey } from "../classify/questions.js"
-import { COMPONENT } from "../classify/questions.js"
-import { CONFIG_DIR } from "../config/AppConfig.js"
-import { GitHub } from "../github/GitHub.js"
-import { type Repo, RepoLabel, type TriageItem, repoSlug } from "../github/model.js"
-import { dim } from "../ui/ansi.js"
-import { COMPONENT_LABEL_ALIASES, LANGUAGE_LABEL_ALIASES, isBot } from "./roster.js"
+import type { ComponentKey, LanguageKey } from "../classify/questions.ts"
+import { COMPONENT } from "../classify/questions.ts"
+import { CONFIG_DIR } from "../config/AppConfig.ts"
+import { GitHub } from "../github/GitHub.ts"
+import { type Repo, RepoLabel, type TriageItem, repoSlug } from "../github/model.ts"
+import { dim } from "../ui/ansi.ts"
+import { COMPONENT_LABEL_ALIASES, LANGUAGE_LABEL_ALIASES, isBot } from "./roster.ts"
 
 export const PROFILE_TTL_DAYS = 7
 export const PROFILE_FORMAT = 1
@@ -38,6 +38,9 @@ export const Teammate = Schema.Struct({
 })
 export type Teammate = typeof Teammate.Type
 
+import { Learned } from "./learned.ts"
+export { Learned } from "./learned.ts"
+
 export const RepoProfile = Schema.Struct({
   format: Schema.Int,
   repo: Schema.String,
@@ -49,13 +52,16 @@ export const RepoProfile = Schema.Struct({
   teammates: Schema.Array(Teammate),
   codeowners: Schema.Array(Schema.Struct({ prefix: Schema.String, teams: Schema.Array(Schema.String), users: Schema.Array(Schema.String) })),
   /** How many history items the roster was inferred from. */
-  sampleSize: Schema.Int
+  sampleSize: Schema.Int,
+  learned: Schema.optional(Learned)
 })
 export type RepoProfile = typeof RepoProfile.Type
 
 export class RepoProfiles extends Context.Service<RepoProfiles, {
   /** Cached profile, regenerated when missing or stale. */
   readonly load: (repo: Repo, options?: { readonly refresh?: boolean }) => Effect.Effect<RepoProfile, Error>
+  /** Persist a modified profile (e.g. with a new `learned` block). */
+  readonly save: (repo: Repo, profile: RepoProfile) => Effect.Effect<void>
 }>()("px-triage/triage/RepoProfiles") {
   static readonly layer = Layer.effect(
     RepoProfiles,
@@ -95,7 +101,10 @@ export class RepoProfiles extends Context.Service<RepoProfiles, {
           ],
           { concurrency: 4 }
         )
-        const profile = buildProfile({ repo, labels, codeownersText, items: [...closedIssues, ...mergedPrs] })
+        const previous = yield* read(repo)
+        const built = buildProfile({ repo, labels, codeownersText, items: [...closedIssues, ...mergedPrs] })
+        // Regenerating the roster must not throw away what training learned.
+        const profile: RepoProfile = previous._tag === "Some" && previous.value.learned ? { ...built, learned: previous.value.learned } : built
         yield* write(profile, repo)
         yield* Console.log(
           dim(`profile ready in ${Math.round(performance.now() - t0)}ms · ${profile.teammates.length} teammates from ${profile.sampleSize} items · ${profile.labels.length} labels`)
@@ -103,7 +112,7 @@ export class RepoProfiles extends Context.Service<RepoProfiles, {
         return profile
       })
 
-      return RepoProfiles.of({ load })
+      return RepoProfiles.of({ load, save: (repo, profile) => write(profile, repo) })
     })
   )
 }

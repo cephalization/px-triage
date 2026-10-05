@@ -8,10 +8,10 @@ import { OtelTracer } from "@effect/opentelemetry"
 import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { Context, Effect, FileSystem, Layer, Schema } from "effect"
-import { AppConfig, CACHE_DIR } from "../config/AppConfig.js"
-import { traceSystemOne } from "../tracing.js"
+import { AppConfig, CACHE_DIR } from "../config/AppConfig.ts"
+import { traceSystemOne } from "../tracing.ts"
 import { TypeSafeClient } from "@typesafe-ai/sdk"
-import type { TriageItem } from "../github/model.js"
+import type { TriageItem } from "../github/model.ts"
 import {
   type ComponentKey,
   type IssueCategory,
@@ -21,7 +21,7 @@ import {
   STATE_LIMITS,
   makeIssueQuestions,
   makePrQuestions
-} from "./questions.js"
+} from "./questions.ts"
 
 export class ClassifyError extends Schema.TaggedError<ClassifyError>()("ClassifyError", {
   message: Schema.String,
@@ -91,6 +91,8 @@ const CachedAssessment = Schema.Struct({
 export class Classifier extends Context.Service<Classifier, {
   readonly classify: (item: TriageItem) => Effect.Effect<Assessment, ClassifyError>
   readonly model: string
+  /** Hash of the question set + project description; changes when either is edited. */
+  readonly questionsHash: string
 }>()("px-triage/classify/Classifier") {
   static readonly layer = (options: { readonly model: string | undefined; readonly cache?: boolean | undefined; readonly context: string }) =>
     Layer.effect(
@@ -194,7 +196,7 @@ export class Classifier extends Context.Service<Classifier, {
             return fresh
           })
 
-        return Classifier.of({ classify, model })
+        return Classifier.of({ classify, model, questionsHash })
       })
     )
 }
@@ -215,7 +217,7 @@ const toScored = (r: {
 const clip = (s: string, max: number) => (s.length <= max ? s : s.slice(0, max) + `\n…[truncated ${s.length - max} chars]`)
 
 /** Structured state: named fields help the model find what each question needs. */
-const toState = (item: TriageItem) => ({
+export const toState = (item: TriageItem) => ({
   kind: item.kind === "pull_request" ? "pull_request" : "issue",
   repository: "Arize-ai/phoenix",
   number: item.number,

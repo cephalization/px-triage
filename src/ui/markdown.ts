@@ -3,7 +3,7 @@
  * issue forms and PR descriptions: headings, fenced code, lists, quotes,
  * tables, task lists, inline code/bold/italic/links/images, <details>.
  */
-import { bold, cyan, dim, gray, green, italic, magenta, underline, visibleLength, wrapText, yellow } from "./ansi.js"
+import { bold, cyan, dim, gray, green, italic, magenta, underline, visibleLength, wrapText, yellow } from "./ansi.ts"
 
 const inline = (s: string): string =>
   s

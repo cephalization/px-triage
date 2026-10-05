@@ -9,11 +9,11 @@
  * "Best" = authored by a maintainer (collaborator / member / owner, or on the
  * repo profile roster), otherwise the oldest.
  */
-import type { LinkedItem, TriageItem } from "../github/model.js"
-import type { ResolvedPlan } from "./executor.js"
-import type { ActionKind } from "./plan.js"
-import type { RepoProfile } from "./profile.js"
-import { TRIAGE_LABEL, workflowLabel } from "./roster.js"
+import type { LinkedItem, TriageItem } from "../github/model.ts"
+import type { ResolvedPlan } from "./executor.ts"
+import type { ActionKind } from "./plan.ts"
+import type { RepoProfile } from "./profile.ts"
+import { TRIAGE_LABEL, workflowLabel } from "./roster.ts"
 
 export interface Propagation {
   readonly target: LinkedItem

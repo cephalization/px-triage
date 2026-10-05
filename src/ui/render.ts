@@ -1,8 +1,8 @@
-import type { Assessment, Scored } from "../classify/Classifier.js"
-import { RISK_LEVELS, SEVERITY_LEVELS, THRESHOLDS, VALUE_LEVELS } from "../classify/questions.js"
-import type { TriageItem } from "../github/model.js"
-import { ACTION_TITLES, type TriagePlan } from "../triage/plan.js"
-import { bar, bold, chip, cyan, dim, gray, green, hr, italic, magenta, red, terminalWidth, truncate, wrapText, yellow } from "./ansi.js"
+import type { Assessment, Scored } from "../classify/Classifier.ts"
+import { RISK_LEVELS, SEVERITY_LEVELS, THRESHOLDS, VALUE_LEVELS } from "../classify/questions.ts"
+import type { TriageItem } from "../github/model.ts"
+import { ACTION_TITLES, type TriagePlan } from "../triage/plan.ts"
+import { bar, bold, chip, cyan, dim, gray, green, hr, italic, magenta, red, terminalWidth, truncate, wrapText, yellow } from "./ansi.ts"
 
 const ago = (iso: string): string => {
   const ms = Date.now() - new Date(iso).getTime()

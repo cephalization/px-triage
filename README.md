@@ -90,10 +90,17 @@ duplicates of it with cross-referencing comments.
 pnpm install
 pnpm dev          # links `pxt` onto your PATH and watch-compiles
 pxt               # first run walks through onboarding
+pnpm triage       # or run the sources directly: Node strips the types itself
 ```
 
+No transpiler in the loop: sources import `.ts` paths, Node 22.18+ runs them
+as is, and `tsc` rewrites the extensions when building `dist` for `pxt`.
+`erasableSyntaxOnly` keeps the code within what Node can strip.
+
 Onboarding writes `~/.px-triage/config.json` (mode 600) with your TypeSafe API
-key, default repo, and optional Phoenix tracing (URL, API key, project).
+key, default repo, and optional Phoenix connection (URL, API key, project).
+Phoenix powers tracing and training; without it both are skipped and the CLI
+points at https://arize.com/docs/phoenix/environments.
 GitHub auth comes from `GITHUB_TOKEN` / `GH_TOKEN` or `gh auth token`.
 
 Per-repo settings live under `repos`, keyed by `owner/name`:
@@ -120,7 +127,8 @@ pxt                          # walk the queue
 pxt --only prs --dry-run     # preview PR triage, change nothing
 pxt --number 1234            # one item
 pxt roster                   # show the repo profile; --refresh regenerates it
-pxt train --limit 200        # replay history, report agreement with Jev
+pxt train                    # Phoenix dataset + experiment; report agreement and what was learned
+pxt train --apply            # also write learned thresholds / policy / owners into the profile
 pxt init                     # redo onboarding
 pnpm test                    # unit tests for the planner and link propagation
 ```
@@ -131,11 +139,24 @@ after 7 days, px-triage builds a profile from GitHub and caches it at
 component, who gets assigned and reviews what (from recent closed issues and
 merged PRs, bots excluded), and CODEOWNERS teams per path.
 
-**Training.** `pxt train` replays already-triaged items, infers what humans did
-from their final state and labels, and reports agreement, a confusion matrix,
-a threshold sweep, the most confident disagreements, and the live acceptance
-rate from your own decisions. Jev is not fine-tuned; the loop improves by
-editing the questions, criteria, and thresholds and re-running.
+**Training.** Phoenix is the training backend and the shared source of truth
+for decisions; without it, `pxt train` only prints how to set one up
+(https://arize.com/docs/phoenix/environments). Each decision anyone on the
+team makes is recorded as a `HUMAN` annotation (`triage.human`) on the item's
+classification span, tagged with the triager's login. `train` reads those
+annotations back, so every teammate who runs `train --apply` converges on the
+same learned settings. The local `~/.px-triage/decisions.jsonl` is only a
+fallback for decisions that never reached Phoenix. `pxt train` then builds a Phoenix dataset
+(`px-triage/<owner>/<name>`) from your decisions plus outcomes inferred from
+already-triaged history, runs a Phoenix experiment that classifies every
+example with the current questions and planner, evaluates action agreement and
+owner hit-rate, and prints agreement, a confusion matrix, disagreements, and
+what it learned: threshold overrides that beat the defaults, a per-category
+action policy where you consistently chose differently, and owner picks per
+component (self-assigns excluded). `pxt train --apply` writes those into the
+repo profile and the planner uses them on the next run. Every experiment is
+visible in Phoenix next to earlier ones, so editing `questions.ts` and
+re-running is a measured A/B. Jev itself is not fine-tuned.
 
 **Caching.** Classifications are cached per item, update time, model, and a
 hash of the questions and project description, so reopening a session is

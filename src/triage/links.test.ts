@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest"
-import type { LinkedItem } from "../github/model.js"
-import { TriageItem } from "../github/model.js"
-import type { ResolvedPlan } from "./executor.js"
-import { orderLinks, propagate } from "./links.js"
-import type { RepoProfile } from "./profile.js"
+import type { LinkedItem } from "../github/model.ts"
+import { TriageItem } from "../github/model.ts"
+import type { ResolvedPlan } from "./executor.ts"
+import { orderLinks, propagate } from "./links.ts"
+import type { RepoProfile } from "./profile.ts"
 
 const label = (name: string) => ({ name, color: "aaaaaa", description: null })
 const profile: RepoProfile = {

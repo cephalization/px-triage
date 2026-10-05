@@ -3,8 +3,8 @@
  * Keys: j/k or arrows, space/f & b for pages, g/G for top/bottom, q/esc to leave.
  */
 import { Effect, Terminal } from "effect"
-import { bold, dim, hr, stripAnsi } from "./ansi.js"
-import { readKey } from "./keys.js"
+import { bold, dim, hr, stripAnsi } from "./ansi.ts"
+import { readKey } from "./keys.ts"
 
 const ALT_ON = "\u001b[?1049h\u001b[H"
 const ALT_OFF = "\u001b[?1049l"

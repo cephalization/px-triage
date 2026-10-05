@@ -8,7 +8,7 @@ import { OpenInferenceSpanKind, SemanticConventions } from "@arizeai/openinferen
 import { Config, Context, Effect, Layer, Schedule, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { type Repo, RepoLabel, TriageItem, repoSlug } from "./model.js"
+import { type Repo, RepoLabel, TriageItem, repoSlug } from "./model.ts"
 
 export class GitHubError extends Schema.TaggedError<GitHubError>()("GitHubError", {
   message: Schema.String,

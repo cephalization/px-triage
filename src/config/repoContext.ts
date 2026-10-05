@@ -4,11 +4,11 @@
  * the user has something concrete to edit in ~/.px-triage/config.json.
  */
 import { Console, Effect } from "effect"
-import { PHOENIX_CONTEXT } from "../classify/questions.js"
-import { GitHub } from "../github/GitHub.js"
-import { type Repo, repoSlug } from "../github/model.js"
-import { dim, yellow } from "../ui/ansi.js"
-import { AppConfig, CONFIG_FILE } from "./AppConfig.js"
+import { PHOENIX_CONTEXT } from "../classify/questions.ts"
+import { GitHub } from "../github/GitHub.ts"
+import { type Repo, repoSlug } from "../github/model.ts"
+import { dim, yellow } from "../ui/ansi.ts"
+import { AppConfig, CONFIG_FILE } from "./AppConfig.ts"
 
 export const resolveRepoContext = Effect.fn("resolveRepoContext")(function*(repo: Repo) {
   const appConfig = yield* AppConfig

@@ -32,7 +32,7 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node"
 import { ATTR_HTTP_RESPONSE_STATUS_CODE, ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions"
 import { APIError, type Questions, type RequestOptions, type SystemOneRequest, type SystemOneResult, type TypeSafeClient } from "@typesafe-ai/sdk"
 import { Effect, Layer } from "effect"
-import type { PhoenixConfig } from "./config/AppConfig.js"
+import type { PhoenixConfig } from "./config/AppConfig.ts"
 
 export const SERVICE_NAME = "px-triage"
 export const VERSION = "0.1.0"

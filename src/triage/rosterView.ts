@@ -1,5 +1,5 @@
-import { bold, chip, cyan, dim, hr, terminalWidth } from "../ui/ansi.js"
-import { PROFILE_TTL_DAYS, type RepoProfile, labelColors } from "./profile.js"
+import { bold, chip, cyan, dim, hr, terminalWidth } from "../ui/ansi.ts"
+import { PROFILE_TTL_DAYS, type RepoProfile, labelColors } from "./profile.ts"
 
 export const renderProfile = (p: RepoProfile): string => {
   const width = terminalWidth()

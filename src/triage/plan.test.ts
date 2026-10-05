@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest"
-import type { Assessment } from "../classify/Classifier.js"
-import { TriageItem } from "../github/model.js"
-import { suggestPlan } from "./plan.js"
-import type { RepoProfile } from "./profile.js"
+import type { Assessment } from "../classify/Classifier.ts"
+import { TriageItem } from "../github/model.ts"
+import { suggestPlan } from "./plan.ts"
+import type { RepoProfile } from "./profile.ts"
 
 const label = (name: string) => ({ name, color: "aaaaaa", description: null })
 const profile: RepoProfile = {
@@ -160,7 +160,44 @@ describe("suggestPlan (pull requests)", () => {
     expect(suggestPlan(pr, assessment({ kind: "pull_request", category: dist("feature", 0.9, ["bug_fix"]), complete: 0.1 }), profile).action).toBe("needs_info")
   })
 
+  it("never asks mechanical PRs for more information", () => {
+    for (const cat of ["dependency_update", "refactor_or_chore", "tests_only"] as const) {
+      expect(suggestPlan(pr, assessment({ kind: "pull_request", category: dist(cat, 0.9, ["bug_fix"]), complete: 0.05 }), profile).action).toBe("review")
+    }
+  })
+
   it("closes promotional PRs", () => {
     expect(suggestPlan(pr, assessment({ kind: "pull_request", category: dist("off_topic_or_promotional", 0.9, ["feature"]) }), profile).action).toBe("close")
+  })
+})
+
+describe("learned settings", () => {
+  it("follows a learned policy for a (kind, category) pair", () => {
+    const learnedProfile: RepoProfile = {
+      ...profile,
+      learned: { updatedAt: "2026-10-05T00:00:00Z", sampleSize: 40, thresholds: {}, policy: { "issue:question_or_support": "needs_info" }, owners: {} }
+    }
+    const plan = suggestPlan(item(), assessment({ category: dist("question_or_support", 0.8, ["bug_report"]) }), learnedProfile)
+    expect(plan.action).toBe("needs_info")
+    expect(plan.rationale.join(" ")).toContain("learned")
+  })
+
+  it("applies learned thresholds under explicit overrides", () => {
+    const learnedProfile: RepoProfile = {
+      ...profile,
+      learned: { updatedAt: "2026-10-05T00:00:00Z", sampleSize: 40, thresholds: { needsInfoBelow: 0.95 }, policy: {}, owners: {} }
+    }
+    // complete=0.9 is below the learned 0.95 floor → needs_info
+    expect(suggestPlan(item(), assessment(), learnedProfile).action).toBe("needs_info")
+    // an explicit override wins over learned
+    expect(suggestPlan(item(), assessment(), learnedProfile, { needsInfoBelow: 0.4 }).action).toBe("bug")
+  })
+
+  it("boosts learned owners in the ranking", () => {
+    const learnedProfile: RepoProfile = {
+      ...profile,
+      learned: { updatedAt: "2026-10-05T00:00:00Z", sampleSize: 40, thresholds: {}, policy: {}, owners: { ui: ["server-owner"] } }
+    }
+    expect(suggestPlan(item(), assessment(), learnedProfile).suggestedAssignees[0]).toBe("server-owner")
   })
 })

@@ -6,8 +6,8 @@
  *
  * Add aliases here when a repo names things differently.
  */
-import type { ComponentKey, LanguageKey } from "../classify/questions.js"
-import type { RepoProfile, Teammate } from "./profile.js"
+import type { ComponentKey, LanguageKey } from "../classify/questions.ts"
+import type { RepoProfile, Teammate } from "./profile.ts"
 
 export const COMPONENT_LABEL_ALIASES: Record<ComponentKey, ReadonlyArray<string>> = {
   ui: ["c/ui", "ui", "area: ui", "frontend", "web", "app"],
@@ -89,12 +89,17 @@ export const priorityLabel = (profile: RepoProfile, level: number): string | nul
  * secondary one; language agreement and overall activity break ties.
  */
 export const rankTeammates = (profile: RepoProfile, component: ComponentKey, language: LanguageKey): ReadonlyArray<Teammate> => {
+  // People the triager actually picked for this component during live sessions.
+  const learnedOwners = profile.learned?.owners[component] ?? []
   const scored = profile.teammates.map((t) => {
     const idx = t.areas.indexOf(component)
     const areaScore = idx === -1 ? 0 : 10 - Math.min(idx, 8)
     const langScore = language !== "not_applicable" && t.languages.includes(language) ? 1 : 0
     const activity = Math.min(1, (t.assigned * 3 + t.reviewed * 2 + t.authored) / 100)
-    return { t, score: areaScore * 2 + langScore + activity }
+    // An explicit, repeated pick by the triager outranks anything inferred from history.
+    const learnedIdx = learnedOwners.indexOf(t.login)
+    const learnedScore = learnedIdx === -1 ? 0 : 30 - 5 * Math.min(learnedIdx, 4)
+    return { t, score: areaScore * 2 + langScore + activity + learnedScore }
   })
   const matched = scored.filter((s) => s.score > 1).sort((a, b) => b.score - a.score).map((s) => s.t)
   // No one owns this component yet: fall back to the most active people.

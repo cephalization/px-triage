@@ -2,7 +2,7 @@
  * Comment templates. `{{author}}` etc. are filled in by `renderTemplate`.
  * Edit freely; the CLI always lets you open the result in $EDITOR first.
  */
-import type { TriageItem } from "../github/model.js"
+import type { TriageItem } from "../github/model.ts"
 
 export interface Template {
   readonly id: string

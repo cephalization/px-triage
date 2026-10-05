@@ -8,8 +8,9 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { Console, Context, Effect, FileSystem, Layer, Redacted, Schema } from "effect"
 import { Prompt } from "effect/cli"
-import { PHOENIX_CONTEXT } from "../classify/questions.js"
-import { bold, cyan, dim, green } from "../ui/ansi.js"
+import { PHOENIX_CONTEXT } from "../classify/questions.ts"
+import { PHOENIX_SETUP_URL } from "../phoenix/constants.ts"
+import { bold, cyan, dim, green } from "../ui/ansi.ts"
 
 export const PhoenixConfig = Schema.Struct({
   /** Phoenix base URL, e.g. http://localhost:6006 or https://app.phoenix.arize.com */
@@ -138,8 +139,10 @@ export const runOnboarding = Effect.gen(function*() {
     default: isPhoenix ? PHOENIX_CONTEXT : ""
   })
 
+  yield* Console.log(dim("Phoenix stores traces of every classification and powers `pxt train`."))
+  yield* Console.log(dim(`No Phoenix yet? Self-host or use Phoenix Cloud: ${PHOENIX_SETUP_URL}`))
   const trace = yield* Prompt.Confirm({
-    message: "Send classification traces to Phoenix (OpenInference LLM spans)?",
+    message: "Connect Phoenix (tracing + training)?",
     initial: true
   })
   let phoenix: PhoenixConfig | undefined
