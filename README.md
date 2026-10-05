@@ -109,9 +109,7 @@ and `tsc` rewrites the extensions when building `dist` for the published
 binary. `erasableSyntaxOnly` keeps the code within what Node can strip.
 
 Releases use [changesets](.changeset/README.md): add one with `pnpm changeset`
-in your PR; merging the generated "Version Packages" PR publishes to npm,
-where the version waits in npm's staging queue until a maintainer approves it
-with 2FA (`npm stage approve`).
+in your PR; merging the generated "Version Packages" PR publishes to npm.
 
 Onboarding writes `~/.px-triage/config.json` (mode 600) with your TypeSafe API
 key, default repo, and optional Phoenix connection (URL, API key, project).
