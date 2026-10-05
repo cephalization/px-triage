@@ -1,5 +1,14 @@
 # @cephalization/px-triage
 
+## 0.1.2
+
+### Patch Changes
+
+- [`a2ca753`](https://github.com/cephalization/px-triage/commit/a2ca753cc0faf67d8e0ae2b4015fd6148797ddce) Thanks [@cephalization](https://github.com/cephalization)! - Scope training data by repository when several repos share one Phoenix
+  project: decisions read back from Phoenix are filtered to the repo being
+  trained, and the repository sent to Jev is taken from each item instead of
+  being hard-coded.
+
 ## 0.1.1
 
 ### Patch Changes
