@@ -5,10 +5,11 @@ import { Command, Flag } from "effect/cli"
 import { Classifier } from "./classify/Classifier.ts"
 import { AppConfig, CONFIG_FILE, runOnboarding, writeConfig } from "./config/AppConfig.ts"
 import { GitHub } from "./github/GitHub.ts"
+import { defaultRepo } from "./github/detectRepo.ts"
 import { type Repo, parseRepo, repoSlug } from "./github/model.ts"
 import { resolveRepoContext } from "./config/repoContext.ts"
 import { Phoenix } from "./phoenix/Phoenix.ts"
-import { tracingLayer } from "./tracing.ts"
+import { VERSION, tracingLayer } from "./tracing.ts"
 import { Executor } from "./triage/executor.ts"
 import { runTrain } from "./triage/train.ts"
 import { RepoProfiles } from "./triage/profile.ts"
@@ -18,7 +19,7 @@ import { dim, red } from "./ui/ansi.ts"
 
 const repoFlag = Flag.String("repo").pipe(
   Flag.withAlias("r"),
-  Flag.withDescription("GitHub repository as owner/name (default from config, else arize-ai/phoenix)"),
+  Flag.withDescription("GitHub repository as owner/name (default: config, else this directory's git origin, else arize-ai/phoenix)"),
   Flag.optional
 )
 const limitFlag = Flag.Int("limit").pipe(Flag.withAlias("n"), Flag.withDescription("Maximum number of items to load"), Flag.withDefault(50))
@@ -49,7 +50,8 @@ const appLayer = (repo: Repo, input: { readonly model: Option.Option<string>; re
   )
 
 const resolveRepo = (flag: Option.Option<string>) =>
-  Effect.map(AppConfig, ({ config }) => parseRepo(Option.getOrElse(flag, () => config.repo ?? "arize-ai/phoenix")))
+  // --repo flag, else config, else the git origin of the current directory, else arize-ai/phoenix.
+  Effect.map(AppConfig, ({ config }) => parseRepo(Option.getOrElse(flag, () => defaultRepo(config.repo))))
 
 const labelFlag = Flag.String("label").pipe(Flag.withDescription("Queue label (default from config, else triage)"), Flag.optional)
 const resolveLabel = (repo: Repo, flag: Option.Option<string>) =>
@@ -166,7 +168,7 @@ const root = triage.pipe(
 )
 
 root.pipe(
-  Command.run({ version: "0.1.0" }),
+  Command.run({ version: VERSION }),
   Effect.catchTag("ConfigError", (e) => Console.error(red(`Config: ${e.message}`))),
   Effect.catchIf(isQuit, () => Console.log(dim("\nbye"))),
   Effect.provide(NodeServices.layer),

@@ -10,6 +10,7 @@ import { Console, Context, Effect, FileSystem, Layer, Redacted, Schema } from "e
 import { Prompt } from "effect/cli"
 import { PHOENIX_CONTEXT } from "../classify/questions.ts"
 import { PHOENIX_SETUP_URL } from "../phoenix/constants.ts"
+import { FALLBACK_REPO, detectRepoFromCwd } from "../github/detectRepo.ts"
 import { bold, cyan, dim, green } from "../ui/ansi.ts"
 
 export const PhoenixConfig = Schema.Struct({
@@ -132,7 +133,11 @@ export const runOnboarding = Effect.gen(function*() {
     validate: (v) => (v.trim().length > 10 ? Effect.succeed(v.trim()) : Effect.fail("That does not look like an API key"))
   })
 
-  const repo = yield* Prompt.String({ message: "Default repository (owner/name)", default: "arize-ai/phoenix" })
+  const detected = detectRepoFromCwd()
+  const repo = yield* Prompt.String({
+    message: detected ? `Default repository (owner/name) · detected from this checkout's origin` : "Default repository (owner/name)",
+    default: detected ?? FALLBACK_REPO
+  })
   const isPhoenix = repo.trim().toLowerCase() === "arize-ai/phoenix"
   const description = yield* Prompt.String({
     message: "One-paragraph description of the project, sent to Jev as context (leave empty to seed from GitHub on first run)",

@@ -31,11 +31,13 @@ import { BatchSpanProcessor, type ReadableSpan, type Span as SdkSpan, type SpanP
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node"
 import { ATTR_HTTP_RESPONSE_STATUS_CODE, ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions"
 import { APIError, type Questions, type RequestOptions, type SystemOneRequest, type SystemOneResult, type TypeSafeClient } from "@typesafe-ai/sdk"
+import { createRequire } from "node:module"
 import { Effect, Layer } from "effect"
 import type { PhoenixConfig } from "./config/AppConfig.ts"
 
 export const SERVICE_NAME = "px-triage"
-export const VERSION = "0.1.0"
+/** Single source of truth for the version: package.json (works from src/ and dist/). */
+export const VERSION: string = createRequire(import.meta.url)("../package.json").version
 
 /**
  * Only OpenInference spans reach Phoenix. Anything without

@@ -1,12 +1,45 @@
 {
-  "name": "px-triage",
-  "version": "0.1.0",
-  "description": "Absurdly fast issue/PR triage for arize-ai/phoenix, powered by Effect and TypeSafe Jev",
+  "name": "@cephalization/px-triage",
+  "version": "0.0.0",
+  "description": "Keyboard-driven GitHub issue and PR triage: TypeSafe Jev suggests the next step, you press Enter. Traces and trains with Arize Phoenix.",
+  "keywords": [
+    "github",
+    "triage",
+    "issues",
+    "pull-requests",
+    "cli",
+    "effect",
+    "typesafe",
+    "jev",
+    "phoenix",
+    "openinference"
+  ],
+  "license": "MIT",
+  "author": "Tony Powell",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cephalization/px-triage.git"
+  },
+  "homepage": "https://github.com/cephalization/px-triage#readme",
+  "bugs": {
+    "url": "https://github.com/cephalization/px-triage/issues"
+  },
   "type": "module",
-  "private": true,
   "bin": {
-    "pxt": "./bin/pxt.js",
-    "px-triage": "./bin/pxt.js"
+    "px-triage": "./bin/px-triage.js",
+    "pxt": "./bin/px-triage.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "dev": "pnpm run link && tsc -p tsconfig.json --watch --preserveWatchOutput",
@@ -17,7 +50,11 @@
     "start": "node bin/pxt.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "triage": "node src/main.ts"
+    "triage": "node src/main.ts",
+    "prepublishOnly": "pnpm build && pnpm test",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "pnpm build && changeset publish"
   },
   "packageManager": "pnpm@11.24.0",
   "devEngines": {
@@ -27,10 +64,6 @@
       "onFail": "download"
     }
   },
-  "engines": {
-    "node": ">=22"
-  },
-  "license": "MIT",
   "dependencies": {
     "@arizeai/openinference-core": "^2.8.0",
     "@arizeai/openinference-semantic-conventions": "^2.14.0",
@@ -52,13 +85,11 @@
     "effect": "4.0.1"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^1.0.1",
+    "@changesets/cli": "^3.0.3",
     "@effect/vitest": "^4.0.0",
     "@types/node": "^26.6.4",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3"
-  },
-  "files": [
-    "bin",
-    "dist"
-  ]
+  }
 }

@@ -84,18 +84,32 @@ duplicates of it with cross-referencing comments.
 | PR sent for review | Issue gets the PR's labels and is assigned to the reviewer | Other issues closed as duplicates of the first |
 | PR closed or needs-info | Nothing; a PR's fate says little about the issue | Nothing |
 
-## Setup
+## Install
+
+```bash
+npm install -g @cephalization/px-triage   # provides `px-triage` and the short alias `pxt`
+pxt                                        # first run walks through onboarding
+```
+
+Or try it without installing: `npx @cephalization/px-triage --help`. Needs
+Node 22.12+. The repository defaults to the `origin` of the git checkout in
+your current directory, so `cd` into a repo and run `pxt`; `--repo owner/name`
+or the config value override it.
+
+### Developing
 
 ```bash
 pnpm install
-pnpm dev          # links `pxt` onto your PATH and watch-compiles
-pxt               # first run walks through onboarding
+pnpm dev          # links `pxt` / `px-triage` onto your PATH and watch-compiles
 pnpm triage       # or run the sources directly: Node strips the types itself
 ```
 
-No transpiler in the loop: sources import `.ts` paths, Node 22.18+ runs them
-as is, and `tsc` rewrites the extensions when building `dist` for `pxt`.
-`erasableSyntaxOnly` keeps the code within what Node can strip.
+No transpiler in the loop: sources import `.ts` paths, Node runs them as is,
+and `tsc` rewrites the extensions when building `dist` for the published
+binary. `erasableSyntaxOnly` keeps the code within what Node can strip.
+
+Releases use [changesets](.changeset/README.md): add one with `pnpm changeset`
+in your PR; merging the generated "Version Packages" PR publishes to npm.
 
 Onboarding writes `~/.px-triage/config.json` (mode 600) with your TypeSafe API
 key, default repo, and optional Phoenix connection (URL, API key, project).

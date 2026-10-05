@@ -11,13 +11,22 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-const target = join(repo, "bin", "pxt.js")
+const target = join(repo, "bin", "px-triage.js")
 const binDir = process.env.PXT_BIN_DIR ?? execSync("pnpm bin -g", { encoding: "utf8" }).trim()
 const remove = process.argv.includes("--remove")
 
 for (const name of ["pxt", "px-triage"]) {
   const link = join(binDir, name)
-  const isOurs = existsSync(link) && lstatSync(link).isSymbolicLink() && readlinkSync(link) === target
+  // Ours if it points anywhere inside this repo's bin/ (the entry file has been renamed before).
+  const lstat = (() => { try { return lstatSync(link) } catch { return null } })()
+  // Ours if it is a symlink into this repo's bin/, even a dangling one (the entry file has been renamed before).
+  const isOurs = lstat !== null && lstat.isSymbolicLink() && readlinkSync(link).startsWith(join(repo, "bin") + "/")
+  if (isOurs && readlinkSync(link) !== target && !remove) {
+    rmSync(link)
+    symlinkSync(target, link)
+    console.log(`${name} → ${target} (relinked)`)
+    continue
+  }
   if (remove) {
     if (isOurs) {
       rmSync(link)
@@ -29,7 +38,7 @@ for (const name of ["pxt", "px-triage"]) {
     console.log(`${name} → ${target} (already linked)`)
     continue
   }
-  if (existsSync(link) || (() => { try { lstatSync(link); return true } catch { return false } })()) {
+  if (lstat !== null) {
     console.error(`refusing to overwrite ${link}; it is not our symlink`)
     process.exitCode = 1
     continue
