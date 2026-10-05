@@ -40,6 +40,7 @@ const item = (over: Partial<ConstructorParameters<typeof TriageItem>[0]> = {}) =
     reactions: 0,
     state: "OPEN",
     stateReason: null,
+    linked: [],
     pr: null,
     ...over
   })

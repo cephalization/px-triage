@@ -5,6 +5,7 @@
  * added after triage too), so read the report as "where do we disagree most",
  * not as a benchmark.
  */
+import { OpenInferenceSpanKind, SemanticConventions } from "@arizeai/openinference-semantic-conventions"
 import { Console, Effect, FileSystem } from "effect"
 import { type Assessment, Classifier } from "../classify/Classifier.js"
 import { THRESHOLDS } from "../classify/questions.js"
@@ -43,7 +44,7 @@ export interface TrainOptions {
   readonly concurrency: number
 }
 
-export const runTrain = Effect.fn("runTrain")(function*(options: TrainOptions) {
+export const runTrain = Effect.fnUntraced(function*(options: TrainOptions) {
   const github = yield* GitHub
   const classifier = yield* Classifier
   const profile = yield* (yield* RepoProfiles).load(options.repo)
@@ -62,6 +63,16 @@ export const runTrain = Effect.fn("runTrain")(function*(options: TrainOptions) {
     labeled,
     ({ item, truth }) =>
       classifier.classify(item).pipe(
+        Effect.withSpan("triage.classify", {
+          root: true,
+          attributes: {
+            [SemanticConventions.OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.CHAIN,
+            [SemanticConventions.INPUT_VALUE]: `#${item.number} ${item.title}`,
+            [SemanticConventions.INPUT_MIME_TYPE]: "text/plain",
+            [SemanticConventions.METADATA]: JSON.stringify({ url: item.url, kind: item.kind, mode: "train", truth }),
+            "github.number": item.number
+          }
+        }),
         Effect.map((assessment) => ({ item, truth, assessment, error: null as string | null })),
         Effect.catch((e) => Effect.succeed({ item, truth, assessment: null as Assessment | null, error: e.message }))
       ),

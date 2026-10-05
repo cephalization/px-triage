@@ -14,6 +14,20 @@ export const ChangedFile = Schema.Struct({
 })
 export type ChangedFile = typeof ChangedFile.Type
 
+/** Another issue/PR connected to this one (closing references, either direction). */
+export const LinkedItem = Schema.Struct({
+  kind: Schema.Literals(["issue", "pull_request"]),
+  number: Schema.Int,
+  title: Schema.String,
+  state: Schema.String,
+  isDraft: Schema.Boolean,
+  createdAt: Schema.String,
+  author: Schema.String,
+  authorAssociation: Schema.NullOr(Schema.String),
+  labels: Schema.Array(Schema.String)
+})
+export type LinkedItem = typeof LinkedItem.Type
+
 export const PrDetails = Schema.Struct({
   isDraft: Schema.Boolean,
   merged: Schema.Boolean,
@@ -51,6 +65,8 @@ export class TriageItem extends Schema.Class<TriageItem>("TriageItem")({
   reactions: Schema.Int,
   state: Schema.Literals(["OPEN", "CLOSED", "MERGED"]),
   stateReason: Schema.NullOr(Schema.String),
+  /** Open items linked by closing references: PRs that close this issue, or issues this PR closes. */
+  linked: Schema.Array(LinkedItem),
   pr: Schema.NullOr(PrDetails)
 }) {
   get isPr(): boolean {

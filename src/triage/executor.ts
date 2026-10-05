@@ -3,9 +3,11 @@
  * on the network. Results are collected and printed before the next prompt,
  * and everything is drained before the process exits.
  */
+import { OpenInferenceSpanKind, SemanticConventions } from "@arizeai/openinference-semantic-conventions"
 import { Context, Effect, Exit, Fiber, Layer, Ref } from "effect"
 import { GitHub, type GitHubError } from "../github/GitHub.js"
-import type { Repo, TriageItem } from "../github/model.js"
+import type { LinkedItem, Repo, TriageItem } from "../github/model.js"
+import type { Propagation } from "./links.js"
 
 export interface ResolvedPlan {
   readonly labelsToAdd: ReadonlyArray<string>
@@ -14,6 +16,8 @@ export interface ResolvedPlan {
   readonly reviewers: { readonly users: ReadonlyArray<string>; readonly teams: ReadonlyArray<string> }
   readonly comment: string | null
   readonly close: "completed" | "not_planned" | null
+  /** Follow-on changes to linked items (see links.ts). */
+  readonly propagations?: ReadonlyArray<Propagation>
 }
 
 export interface Report {
@@ -40,20 +44,40 @@ export class Executor extends Context.Service<Executor, {
         const reports = yield* Ref.make<ReadonlyArray<Report>>([])
         const pending = yield* Ref.make(0)
 
-        const apply = Effect.fn("Executor.apply")(function*(repo: Repo, item: TriageItem, plan: ResolvedPlan) {
-          const n = item.number
+        const applyTo = Effect.fnUntraced(function*(repo: Repo, target: { number: number; kind: TriageItem["kind"] }, plan: ResolvedPlan) {
+          const n = target.number
           if (plan.comment) yield* github.comment(repo, n, plan.comment)
           yield* github.addLabels(repo, n, plan.labelsToAdd)
           for (const label of plan.labelsToRemove) yield* github.removeLabel(repo, n, label)
           yield* github.assign(repo, n, plan.assignees)
-          if (item.kind === "pull_request") {
+          if (target.kind === "pull_request") {
             yield* github.requestReviewers(repo, n, plan.reviewers.users, plan.reviewers.teams)
           }
           if (plan.close) {
-            if (item.kind === "pull_request") yield* github.closePullRequest(repo, n)
+            if (target.kind === "pull_request") yield* github.closePullRequest(repo, n)
             else yield* github.close(repo, n, plan.close)
           }
         })
+
+        const applyBody = Effect.fnUntraced(function*(repo: Repo, item: TriageItem, plan: ResolvedPlan) {
+          yield* applyTo(repo, item, plan)
+          for (const p of plan.propagations ?? []) yield* applyTo(repo, p.target, p.plan)
+        })
+
+        /** One root CHAIN trace per applied plan, with each GitHub call as a TOOL child. */
+        const apply = (repo: Repo, item: TriageItem, plan: ResolvedPlan) =>
+          applyBody(repo, item, plan).pipe(
+            Effect.withSpan("triage.apply", {
+              root: true,
+              attributes: {
+                [SemanticConventions.OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.CHAIN,
+                [SemanticConventions.INPUT_VALUE]: `#${item.number} ${describe(plan)}`,
+                [SemanticConventions.INPUT_MIME_TYPE]: "text/plain",
+                "github.number": item.number,
+                "github.kind": item.kind
+              }
+            })
+          )
 
         const submit = (repo: Repo, item: TriageItem, plan: ResolvedPlan) =>
           Effect.gen(function*() {
@@ -104,5 +128,8 @@ export const describe = (plan: ResolvedPlan): string => {
   const rev = [...plan.reviewers.users.map((u) => "@" + u), ...plan.reviewers.teams.map((t) => "@arize-ai/" + t)]
   if (rev.length) parts.push(`review ${rev.join(" ")}`)
   if (plan.close) parts.push(`close (${plan.close})`)
+  if (plan.propagations?.length) parts.push(`+${plan.propagations.length} linked (${plan.propagations.map((p) => `#${p.target.number}`).join(" ")})`)
   return parts.length ? parts.join(" · ") : "no changes"
 }
+
+export const describeTarget = (t: LinkedItem): string => `${t.kind === "pull_request" ? "PR" : "issue"} #${t.number}`

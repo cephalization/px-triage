@@ -1,33 +1,43 @@
 /**
- * Phoenix tracing, set up the way the OpenInference TypeSafe instrumentation
- * documents it (js/packages/openinference-instrumentation-typesafe):
+ * Phoenix tracing following the OpenInference decision-span conventions
+ * (spec/decision_spans.md) and the structure of the official TypeSafe
+ * instrumentation (js/packages/openinference-instrumentation-typesafe on main):
  *
- *   NodeTracerProvider (resource: openinference.project.name)
- *     └─ OTLP/proto exporter → {phoenix}/v1/traces
- *   TypeSafeInstrumentation.manuallyInstrument(TypeSafe)   // ESM
+ *   NodeTracerProvider (resource: openinference.project.name) → OTLP/proto → {phoenix}/v1/traces
+ *   traceSystemOne(): one DECISION span per `systemOne` call, named
+ *   "TypeSafeClient.systemOne", with JSON input/output, decision.* model
+ *   attributes and decision.token_count.*.
  *
- * The instrumentation emits one OpenInference DECISION span per
- * `TypeSafeClient.systemOne` call (JSON input/output, model, token usage).
- * Effect's own spans (the per-item `triage.item` CHAIN span) are routed into
- * the same provider through `@effect/opentelemetry`, so the SDK span nests
- * under the triage span in Phoenix.
+ * The published instrumentation package (0.1.0) still emits LLM spans with
+ * llm.* attributes, so the wrapper here mirrors the unreleased decision-span
+ * version instead of depending on the package.
+ *
+ * Effect's own spans are routed into the same provider via @effect/opentelemetry.
  */
 import { OtelTracer, Resource } from "@effect/opentelemetry"
-import { TypeSafeInstrumentation } from "@arizeai/openinference-instrumentation-typesafe"
-import { SEMRESATTRS_PROJECT_NAME } from "@arizeai/openinference-semantic-conventions"
+import { getDecisionAttributes, getInputAttributes, getLLMAttributes, getOutputAttributes, OITracer, safelyJSONStringify } from "@arizeai/openinference-core"
+import {
+  DecisionProvider,
+  DecisionSystem,
+  MimeType,
+  OpenInferenceSpanKind,
+  SEMRESATTRS_PROJECT_NAME,
+  SemanticConventions
+} from "@arizeai/openinference-semantic-conventions"
+import { context as otelContext, type Span as OtelSpan, SpanKind, SpanStatusCode, trace as otelTrace } from "@opentelemetry/api"
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto"
 import { resourceFromAttributes } from "@opentelemetry/resources"
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node"
-import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions"
-import * as TypeSafe from "@typesafe-ai/sdk"
+import { ATTR_HTTP_RESPONSE_STATUS_CODE, ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions"
+import { APIError, type Questions, type RequestOptions, type SystemOneRequest, type SystemOneResult, type TypeSafeClient } from "@typesafe-ai/sdk"
 import { Effect, Layer } from "effect"
 import type { PhoenixConfig } from "./config/AppConfig.js"
 
 export const SERVICE_NAME = "px-triage"
 export const VERSION = "0.1.0"
 
-const setupTracing = (phoenix: PhoenixConfig) => {
+const setupProvider = (phoenix: PhoenixConfig) => {
   const headers: Record<string, string> = phoenix.apiKey
     ? { Authorization: `Bearer ${phoenix.apiKey}`, api_key: phoenix.apiKey }
     : {}
@@ -45,17 +55,7 @@ const setupTracing = (phoenix: PhoenixConfig) => {
     ]
   })
   provider.register()
-  const instrumentation = new TypeSafeInstrumentation({ tracerProvider: provider })
-  instrumentation.manuallyInstrument(TypeSafe)
-  return {
-    provider,
-    instrumentation,
-    shutdown: async () => {
-      await provider.forceFlush()
-      instrumentation.disable()
-      await provider.shutdown()
-    }
-  }
+  return provider
 }
 
 /**
@@ -66,14 +66,68 @@ export const tracingLayer = (phoenix: PhoenixConfig | undefined): Layer.Layer<ne
   if (!phoenix) return Layer.empty
   return Layer.unwrap(
     Effect.gen(function*() {
-      const tracing = yield* Effect.acquireRelease(
-        Effect.sync(() => setupTracing(phoenix)),
-        (t) => Effect.promise(() => t.shutdown()).pipe(Effect.ignore)
+      const provider = yield* Effect.acquireRelease(
+        Effect.sync(() => setupProvider(phoenix)),
+        (p) => Effect.promise(() => p.forceFlush().then(() => p.shutdown())).pipe(Effect.ignore)
       )
       return OtelTracer.layer.pipe(
-        Layer.provide(Layer.succeed(OtelTracer.OtelTracerProvider, tracing.provider)),
+        Layer.provide(Layer.succeed(OtelTracer.OtelTracerProvider, provider)),
         Layer.provide(Resource.layer({ serviceName: SERVICE_NAME, serviceVersion: VERSION, attributes: { [SEMRESATTRS_PROJECT_NAME]: phoenix.projectName } }))
       )
     })
   )
+}
+
+// ---------------------------------------------------------------------------
+// DECISION span for TypeSafeClient.systemOne
+// ---------------------------------------------------------------------------
+
+const oiTracer = new OITracer({ tracer: otelTrace.getTracer(SERVICE_NAME, VERSION) })
+
+/**
+ * Call `client.systemOne` inside an OpenInference DECISION span, parented to
+ * `parent` (an OpenTelemetry span, e.g. the current Effect span bridged via
+ * @effect/opentelemetry) or to the active OTel context when `parent` is absent.
+ */
+export const traceSystemOne = async <Q extends Questions>(
+  client: TypeSafeClient,
+  request: SystemOneRequest<Q>,
+  options: RequestOptions,
+  parent: OtelSpan | undefined
+): Promise<SystemOneResult<Q>> => {
+  const parentCtx = parent ? otelTrace.setSpan(otelContext.active(), parent) : otelContext.active()
+  const requestModel = request.model ?? client.defaultModel
+  const span = oiTracer.startSpan(
+    "TypeSafeClient.systemOne",
+    {
+      kind: SpanKind.CLIENT,
+      attributes: {
+        [SemanticConventions.OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.DECISION,
+        ...getDecisionAttributes({ system: DecisionSystem.TYPESAFE, provider: DecisionProvider.TYPESAFE, requestModelName: requestModel }),
+        ...getInputAttributes({ value: safelyJSONStringify({ ...request, model: requestModel }) ?? "", mimeType: MimeType.JSON }),
+        ...getLLMAttributes({ invocationParameters: { model: requestModel, timeout: options.timeout } })
+      }
+    },
+    parentCtx
+  )
+  try {
+    const result = await otelContext.with(otelTrace.setSpan(parentCtx, span), () => client.systemOne(request, options))
+    span.setAttributes({
+      ...getOutputAttributes({ value: safelyJSONStringify(result) ?? "", mimeType: MimeType.JSON }),
+      ...getDecisionAttributes({
+        modelName: result.model,
+        responseModelName: result.model,
+        tokenCount: { input: result.usage.input_tokens, output: result.usage.output_tokens }
+      })
+    })
+    span.setStatus({ code: SpanStatusCode.OK })
+    return result
+  } catch (error) {
+    if (error instanceof APIError) span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, error.status)
+    span.recordException(error instanceof Error ? error : String(error))
+    span.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) })
+    throw error
+  } finally {
+    span.end()
+  }
 }

@@ -4,6 +4,7 @@
  * REST. The token comes from GITHUB_TOKEN / GH_TOKEN, falling back to
  * `gh auth token` so the CLI works wherever `gh` is logged in.
  */
+import { OpenInferenceSpanKind, SemanticConventions } from "@arizeai/openinference-semantic-conventions"
 import { Config, Context, Effect, Layer, Schedule, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
@@ -27,6 +28,10 @@ export class GitHub extends Context.Service<GitHub, {
   /** Login of the authenticated user (cached for the process). */
   readonly viewer: Effect.Effect<string, GitHubError>
   readonly fetchTriageQueue: (options: FetchQueueOptions) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
+  /** Just the numbers in the queue, oldest first. Fast (no bodies). */
+  readonly fetchQueueNumbers: (options: FetchQueueOptions) => Effect.Effect<ReadonlyArray<{ number: number; kind: TriageItem["kind"] }>, GitHubError>
+  /** Full details for a batch of numbers in one GraphQL request (≤ 10 recommended). */
+  readonly fetchItems: (repo: Repo, numbers: ReadonlyArray<number>) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
   readonly fetchItem: (repo: Repo, number: number) => Effect.Effect<TriageItem, GitHubError>
   /** Arbitrary GitHub issue/PR search (same fields as the queue). */
   readonly search: (query: string, limit: number) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
@@ -74,8 +79,10 @@ export class GitHub extends Context.Service<GitHub, {
       const client = base.pipe(HttpClient.filterStatusOk)
 
       const fail = (message: string) => (cause: unknown) => new GitHubError({ message, cause })
+      /** Mutations show up in Phoenix as TOOL spans under the apply span. */
+      const tool = (name: string) => Effect.fn(name, { attributes: { [SemanticConventions.OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.TOOL } })
 
-      const graphql = Effect.fn("GitHub.graphql")(function*<S extends Schema.Top>(
+      const graphql = Effect.fnUntraced(function*<S extends Schema.Top>(
         schema: S,
         query: string,
         variables: Record<string, unknown>
@@ -95,7 +102,7 @@ export class GitHub extends Context.Service<GitHub, {
         return res.data as S["Type"]
       })
 
-      const fetchTriageQueue = Effect.fn("GitHub.fetchTriageQueue")(function*(options: FetchQueueOptions) {
+      const fetchTriageQueue = Effect.fnUntraced(function*(options: FetchQueueOptions) {
         const typeFilter = options.only === "issues" ? " is:issue" : options.only === "prs" ? " is:pr" : ""
         const q = `repo:${repoSlug(options.repo)} is:open label:"${options.label}"${typeFilter} sort:created-asc`
         const items: Array<TriageItem> = []
@@ -113,7 +120,7 @@ export class GitHub extends Context.Service<GitHub, {
         return items
       })
 
-      const search = Effect.fn("GitHub.search")(function*(q: string, limit: number) {
+      const search = Effect.fnUntraced(function*(q: string, limit: number) {
         const items: Array<TriageItem> = []
         let after: string | null = null
         while (items.length < limit) {
@@ -129,7 +136,7 @@ export class GitHub extends Context.Service<GitHub, {
         return items
       })
 
-      const fetchLabels = Effect.fn("GitHub.fetchLabels")(function*(repo: Repo, number: number) {
+      const fetchLabels = Effect.fnUntraced(function*(repo: Repo, number: number) {
         const res = yield* client.get(`/repos/${repo.owner}/${repo.name}/issues/${number}`).pipe(
           Effect.flatMap(HttpClientResponse.schemaBodyJson(Schema.Struct({ labels: Schema.Array(Schema.Struct({ name: Schema.String })) }))),
           Effect.mapError(fail(`Failed to fetch labels for #${number}`))
@@ -137,7 +144,7 @@ export class GitHub extends Context.Service<GitHub, {
         return res.labels.map((l) => l.name)
       })
 
-      const fetchRepoInfo = Effect.fn("GitHub.fetchRepoInfo")(function*(repo: Repo) {
+      const fetchRepoInfo = Effect.fnUntraced(function*(repo: Repo) {
         const res = yield* client.get(`/repos/${repo.owner}/${repo.name}`).pipe(
           Effect.flatMap(
             HttpClientResponse.schemaBodyJson(
@@ -153,7 +160,7 @@ export class GitHub extends Context.Service<GitHub, {
         return { description: res.description, topics: res.topics ?? [], language: res.language }
       })
 
-      const listLabels = Effect.fn("GitHub.listLabels")(function*(repo: Repo) {
+      const listLabels = Effect.fnUntraced(function*(repo: Repo) {
         const all: Array<RepoLabel> = []
         for (let pageNo = 1; pageNo <= 10; pageNo++) {
           const batch = yield* client.get(`/repos/${repo.owner}/${repo.name}/labels`, { urlParams: { per_page: 100, page: pageNo } }).pipe(
@@ -166,7 +173,7 @@ export class GitHub extends Context.Service<GitHub, {
         return all
       })
 
-      const fetchCodeowners = Effect.fn("GitHub.fetchCodeowners")(function*(repo: Repo) {
+      const fetchCodeowners = Effect.fnUntraced(function*(repo: Repo) {
         for (const path of [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"]) {
           const res = yield* base.get(`/repos/${repo.owner}/${repo.name}/contents/${path}`).pipe(
             Effect.mapError(fail("Failed to read CODEOWNERS"))
@@ -180,7 +187,7 @@ export class GitHub extends Context.Service<GitHub, {
         return null
       })
 
-      const fetchHistory = Effect.fn("GitHub.fetchHistory")(function*(options: { readonly repo: Repo; readonly label: string; readonly limit: number }) {
+      const fetchHistory = Effect.fnUntraced(function*(options: { readonly repo: Repo; readonly label: string; readonly limit: number }) {
         // Everything not currently in the queue, newest activity first. Issue
         // forms auto-apply the triage label, so "no triage label" ≈ "triaged".
         const q = `repo:${repoSlug(options.repo)} -label:"${options.label}" sort:updated-desc`
@@ -199,7 +206,39 @@ export class GitHub extends Context.Service<GitHub, {
         return items
       })
 
-      const fetchItem = Effect.fn("GitHub.fetchItem")(function*(repo: Repo, number: number) {
+      const fetchQueueNumbers = Effect.fnUntraced(function*(options: FetchQueueOptions) {
+        const typeFilter = options.only === "issues" ? " is:issue" : options.only === "prs" ? " is:pr" : ""
+        const q = `repo:${repoSlug(options.repo)} is:open label:"${options.label}"${typeFilter} sort:created-asc`
+        const out: Array<{ number: number; kind: TriageItem["kind"] }> = []
+        let after: string | null = null
+        while (out.length < options.limit) {
+          const first = Math.min(100, options.limit - out.length)
+          const data: typeof LightSearchData.Type = yield* graphql(LightSearchData, LIGHT_SEARCH_QUERY, { q, first, after })
+          for (const n of data.search.nodes) {
+            if (n.__typename === "Issue") out.push({ number: n.number!, kind: "issue" })
+            else if (n.__typename === "PullRequest") out.push({ number: n.number!, kind: "pull_request" })
+          }
+          if (!data.search.pageInfo.hasNextPage) break
+          after = data.search.pageInfo.endCursor
+        }
+        return out
+      })
+
+      const fetchItems = Effect.fnUntraced(function*(repo: Repo, numbers: ReadonlyArray<number>) {
+        if (numbers.length === 0) return []
+        const fields = numbers.map((n, i) => `i${i}: issueOrPullRequest(number: ${n}) { ${ISSUE_FRAGMENT} ${PR_FRAGMENT} }`).join("\n")
+        const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`
+        const data = yield* graphql(ItemsData, query, { owner: repo.owner, name: repo.name })
+        const items: Array<TriageItem> = []
+        for (let i = 0; i < numbers.length; i++) {
+          const node = data.repository[`i${i}`]
+          const item = node ? toItem(node) : null
+          if (item) items.push(item)
+        }
+        return items
+      })
+
+      const fetchItem = Effect.fnUntraced(function*(repo: Repo, number: number) {
         const data = yield* graphql(ItemData, ITEM_QUERY, { owner: repo.owner, name: repo.name, number })
         const item = toItem(data.repository.issueOrPullRequest)
         if (!item) return yield* new GitHubError({ message: `#${number} is not an issue or pull request` })
@@ -215,7 +254,7 @@ export class GitHub extends Context.Service<GitHub, {
 
       const issuePath = (repo: Repo, number: number) => `/repos/${repo.owner}/${repo.name}/issues/${number}`
 
-      const addLabels = Effect.fn("GitHub.addLabels")(function*(repo: Repo, number: number, labels: ReadonlyArray<string>) {
+      const addLabels = tool("GitHub.addLabels")(function*(repo: Repo, number: number, labels: ReadonlyArray<string>) {
         if (labels.length === 0) return
         yield* HttpClientRequest.post(`${issuePath(repo, number)}/labels`).pipe(
           HttpClientRequest.bodyJsonUnsafe({ labels }),
@@ -224,7 +263,7 @@ export class GitHub extends Context.Service<GitHub, {
         )
       })
 
-      const removeLabel = Effect.fn("GitHub.removeLabel")(function*(repo: Repo, number: number, label: string) {
+      const removeLabel = tool("GitHub.removeLabel")(function*(repo: Repo, number: number, label: string) {
         // 404 means the label was already gone, which is fine.
         yield* base.del(`${issuePath(repo, number)}/labels/${encodeURIComponent(label)}`).pipe(
           Effect.flatMap(HttpClientResponse.filterStatus((s) => (s >= 200 && s < 300) || s === 404)),
@@ -232,7 +271,7 @@ export class GitHub extends Context.Service<GitHub, {
         )
       })
 
-      const comment = Effect.fn("GitHub.comment")(function*(repo: Repo, number: number, body: string) {
+      const comment = tool("GitHub.comment")(function*(repo: Repo, number: number, body: string) {
         const res = yield* HttpClientRequest.post(`${issuePath(repo, number)}/comments`).pipe(
           HttpClientRequest.bodyJsonUnsafe({ body }),
           client.execute,
@@ -242,7 +281,7 @@ export class GitHub extends Context.Service<GitHub, {
         return res.html_url
       })
 
-      const assign = Effect.fn("GitHub.assign")(function*(repo: Repo, number: number, assignees: ReadonlyArray<string>) {
+      const assign = tool("GitHub.assign")(function*(repo: Repo, number: number, assignees: ReadonlyArray<string>) {
         if (assignees.length === 0) return
         yield* HttpClientRequest.post(`${issuePath(repo, number)}/assignees`).pipe(
           HttpClientRequest.bodyJsonUnsafe({ assignees }),
@@ -251,7 +290,7 @@ export class GitHub extends Context.Service<GitHub, {
         )
       })
 
-      const close = Effect.fn("GitHub.close")(function*(repo: Repo, number: number, reason: "completed" | "not_planned") {
+      const close = tool("GitHub.close")(function*(repo: Repo, number: number, reason: "completed" | "not_planned") {
         yield* HttpClientRequest.patch(issuePath(repo, number)).pipe(
           HttpClientRequest.bodyJsonUnsafe({ state: "closed", state_reason: reason }),
           client.execute,
@@ -259,7 +298,7 @@ export class GitHub extends Context.Service<GitHub, {
         )
       })
 
-      const closePullRequest = Effect.fn("GitHub.closePullRequest")(function*(repo: Repo, number: number) {
+      const closePullRequest = tool("GitHub.closePullRequest")(function*(repo: Repo, number: number) {
         yield* HttpClientRequest.patch(`/repos/${repo.owner}/${repo.name}/pulls/${number}`).pipe(
           HttpClientRequest.bodyJsonUnsafe({ state: "closed" }),
           client.execute,
@@ -267,7 +306,7 @@ export class GitHub extends Context.Service<GitHub, {
         )
       })
 
-      const requestReviewers = Effect.fn("GitHub.requestReviewers")(function*(
+      const requestReviewers = tool("GitHub.requestReviewers")(function*(
         repo: Repo,
         number: number,
         users: ReadonlyArray<string>,
@@ -289,6 +328,8 @@ export class GitHub extends Context.Service<GitHub, {
         listLabels,
         fetchCodeowners,
         fetchTriageQueue,
+        fetchQueueNumbers,
+        fetchItems,
         fetchHistory,
         fetchItem,
         addLabels,
@@ -345,6 +386,18 @@ const Comments = Schema.Struct({
   nodes: Schema.Array(Schema.Struct({ author: Actor, body: Schema.String, createdAt: Schema.String }))
 })
 
+const LinkNode = Schema.Struct({
+  number: Schema.Int,
+  title: Schema.String,
+  state: Schema.String,
+  isDraft: Schema.optional(Schema.Boolean),
+  createdAt: Schema.String,
+  authorAssociation: Schema.String,
+  author: Actor,
+  labels: Named
+})
+const Links = Schema.Struct({ nodes: Schema.Array(LinkNode) })
+
 const IssueNode = Schema.Struct({
   __typename: Schema.Literal("Issue"),
   id: Schema.String,
@@ -361,7 +414,8 @@ const IssueNode = Schema.Struct({
   labels: Named,
   assignees: Logins,
   comments: Comments,
-  reactions: Schema.Struct({ totalCount: Schema.Int })
+  reactions: Schema.Struct({ totalCount: Schema.Int }),
+  closedByPullRequestsReferences: Schema.NullOr(Links)
 })
 
 const PrNode = Schema.Struct({
@@ -404,9 +458,7 @@ const PrNode = Schema.Struct({
       nodes: Schema.Array(Schema.Struct({ path: Schema.String, additions: Schema.Int, deletions: Schema.Int }))
     })
   ),
-  closingIssuesReferences: Schema.Struct({
-    nodes: Schema.Array(Schema.Struct({ number: Schema.Int, title: Schema.String }))
-  }),
+  closingIssuesReferences: Links,
   commits: Schema.Struct({
     nodes: Schema.Array(
       Schema.Struct({
@@ -431,6 +483,25 @@ const SearchData = Schema.Struct({
   })
 })
 
+const LightSearchData = Schema.Struct({
+  search: Schema.Struct({
+    pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean, endCursor: Schema.NullOr(Schema.String) }),
+    nodes: Schema.Array(Schema.Struct({ __typename: Schema.String, number: Schema.optional(Schema.Int) }))
+  })
+})
+
+const LIGHT_SEARCH_QUERY = `
+query($q: String!, $first: Int!, $after: String) {
+  search(query: $q, type: ISSUE, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { __typename ... on Issue { number } ... on PullRequest { number } }
+  }
+}`
+
+const ItemsData = Schema.Struct({
+  repository: Schema.Record(Schema.String, Schema.NullOr(SearchNode))
+})
+
 const ItemData = Schema.Struct({
   repository: Schema.Struct({ issueOrPullRequest: SearchNode })
 })
@@ -443,6 +514,7 @@ const ISSUE_FRAGMENT = `
     assignees(first: 10) { nodes { login } }
     comments(first: 5) { totalCount nodes { author { login } body createdAt } }
     reactions { totalCount }
+    closedByPullRequestsReferences(first: 10, includeClosedPrs: false) { nodes { number title state createdAt authorAssociation author { login } labels(first: 20) { nodes { name } } isDraft } }
   }`
 
 const PR_FRAGMENT = `
@@ -456,7 +528,7 @@ const PR_FRAGMENT = `
     reviews(first: 20) { totalCount nodes { author { login } } }
     reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } }
     files(first: 60) { nodes { path additions deletions } }
-    closingIssuesReferences(first: 5) { nodes { number title } }
+    closingIssuesReferences(first: 10) { nodes { number title state createdAt authorAssociation author { login } labels(first: 20) { nodes { name } } } }
     commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
   }`
 
@@ -475,6 +547,21 @@ query($owner: String!, $name: String!, $number: Int!) {
     issueOrPullRequest(number: $number) { ${ISSUE_FRAGMENT} ${PR_FRAGMENT} }
   }
 }`
+
+const toLinks = (kind: TriageItem["kind"], nodes: ReadonlyArray<typeof LinkNode.Type>) =>
+  nodes
+    .filter((l) => l.state === "OPEN")
+    .map((l) => ({
+      kind,
+      number: l.number,
+      title: l.title,
+      state: l.state,
+      isDraft: l.isDraft ?? false,
+      createdAt: l.createdAt,
+      author: l.author?.login ?? "ghost",
+      authorAssociation: l.authorAssociation,
+      labels: l.labels.nodes.map((x) => x.name)
+    }))
 
 const toItem = (node: typeof SearchNode.Type): TriageItem | null => {
   if (node.__typename === "Issue") {
@@ -498,6 +585,7 @@ const toItem = (node: typeof SearchNode.Type): TriageItem | null => {
       reactions: n.reactions.totalCount,
       state: n.state,
       stateReason: n.stateReason,
+      linked: toLinks("pull_request", n.closedByPullRequestsReferences?.nodes ?? []),
       pr: null
     })
   }
@@ -522,6 +610,7 @@ const toItem = (node: typeof SearchNode.Type): TriageItem | null => {
       reactions: 0,
       state: n.state,
       stateReason: null,
+      linked: toLinks("issue", n.closingIssuesReferences.nodes),
       pr: {
         isDraft: n.isDraft,
         merged: n.merged,
@@ -537,7 +626,7 @@ const toItem = (node: typeof SearchNode.Type): TriageItem | null => {
           const who = r.requestedReviewer?.login ?? (r.requestedReviewer?.slug ? `team:${r.requestedReviewer.slug}` : null)
           return who ? [who] : []
         }),
-        linkedIssues: n.closingIssuesReferences.nodes,
+        linkedIssues: n.closingIssuesReferences.nodes.map((l) => ({ number: l.number, title: l.title })),
         checks: n.commits.nodes[0]?.commit.statusCheckRollup?.state ?? null
       }
     })

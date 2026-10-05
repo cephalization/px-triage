@@ -11,10 +11,11 @@
  * A letter runs the guided flow for that action instead.
  */
 import { Cause, Console, Deferred, Effect, Exit, Option, Terminal } from "effect"
+import { Chunk } from "effect"
 import { Prompt } from "effect/cli"
 import { OpenInferenceSpanKind, SemanticConventions } from "@arizeai/openinference-semantic-conventions"
 import { type Assessment, Classifier, type ClassifyError } from "../classify/Classifier.js"
-import { GitHub, type QueueFilter } from "../github/GitHub.js"
+import { GitHub, GitHubError, type QueueFilter } from "../github/GitHub.js"
 import { type Repo, type TriageItem, repoSlug } from "../github/model.js"
 import { bold, cyan, dim, green, red, yellow } from "../ui/ansi.js"
 import { type Hotkey, hotkeyMenu } from "../ui/keys.js"
@@ -24,6 +25,7 @@ import { editText, openInBrowser } from "../ui/prompts.js"
 import { renderAssessment, renderBody, renderHeader, renderReport } from "../ui/render.js"
 import { appendDecision, makeDecision, readDecisions } from "./decisions.js"
 import { Executor, type ResolvedPlan, describe } from "./executor.js"
+import { isMaintainer, propagate } from "./links.js"
 import { ACTION_TITLES, type ActionKind, type TriagePlan, suggestPlan } from "./plan.js"
 import { type RepoProfile, RepoProfiles, labelColors } from "./profile.js"
 import { TRIAGE_LABEL, WORKFLOW_LABEL_ALIASES, type WorkflowLabelKey, workflowLabel } from "./roster.js"
@@ -41,64 +43,131 @@ export interface SessionOptions {
 
 type MenuChoice = { readonly _tag: "accept"; readonly assignee?: "me" | "choose" } | { readonly _tag: "action"; readonly action: ActionKind } | { readonly _tag: "open" } | { readonly _tag: "view" } | { readonly _tag: "quit" }
 
-export const runSession = Effect.fn("runSession")(function*(options: SessionOptions) {
+export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
   const github = yield* GitHub
   const classifier = yield* Classifier
   const executor = yield* Executor
   const slug = repoSlug(options.repo)
-  const me = yield* github.viewer.pipe(Effect.orElseSucceed(() => null))
-  const profile = yield* (yield* RepoProfiles).load(options.repo)
-  const colors = labelColors(profile)
-  // One Phoenix session per CLI run so every item's trace groups together.
+  // One Phoenix session per CLI run so every item's traces group together.
   const sessionId = `px-triage-${new Date().toISOString()}`
+  const classifyAttrs = { [SemanticConventions.SESSION_ID]: sessionId, repo: slug }
 
-  const t0 = performance.now()
-  const fetched = Option.isSome(options.number)
-    ? [yield* github.fetchItem(options.repo, options.number.value)]
-    : yield* github.fetchTriageQueue(options)
-  const { items, dropped, deferred: deferredCount } = Option.isSome(options.number)
-    ? { items: fetched, dropped: 0, deferred: 0 }
-    : yield* reconcileQueue(github, options, fetched)
-  const fetchMs = Math.round(performance.now() - t0)
+  // ---- Boot: everything independent runs concurrently, each step reports when done.
+  const [me, profile, queue] = yield* Effect.all(
+    [
+      step("github user", github.viewer.pipe(Effect.orElseSucceed(() => null)), (login) => (login ? `@${login}` : "unknown")),
+      step("repo profile", (yield* RepoProfiles).load(options.repo), (p) => `${p.teammates.length} teammates · ${p.labels.length} labels`),
+      step(
+        "queue",
+        Option.isSome(options.number)
+          ? Effect.succeed([{ number: options.number.value, kind: "issue" as TriageItem["kind"] }])
+          : github.fetchQueueNumbers(options),
+        (q) => `${q.length} item${q.length === 1 ? "" : "s"} labeled "${options.label}"`
+      )
+    ],
+    { concurrency: 3 }
+  )
+  const colors = labelColors(profile)
+
+  const { numbers: initialNumbers, dropped, deferred: deferredCount } = Option.isSome(options.number)
+    ? { numbers: queue.map((q) => q.number), dropped: 0, deferred: 0 }
+    : yield* reconcileQueue(github, options, queue.map((q) => q.number))
   if (dropped > 0 || deferredCount > 0) {
     yield* Console.log(
       dim(
-        [
+        "  " + [
           dropped > 0 ? `${dropped} already triaged (search index lag)` : null,
           deferredCount > 0 ? `${deferredCount} previously skipped moved to the end` : null
         ].filter(Boolean).join(" · ")
       )
     )
   }
-
-  if (items.length === 0) {
+  // Mutable: propagation removes linked items from the remainder of the queue.
+  let numbers: Array<number> = [...initialNumbers]
+  if (numbers.length === 0) {
     yield* Console.log(green(`Nothing labeled "${options.label}" in ${slug}. Inbox zero.`))
     return
   }
-  yield* Console.log(
-    dim(`fetched ${items.length} item${items.length === 1 ? "" : "s"} in ${fetchMs}ms · classifying with ${classifier.model}` +
-      (options.dryRun ? ` · ${yellow("DRY RUN")}` : ""))
-  )
+  yield* Console.log(dim(`  details + ${classifier.model} classification stream in the background${options.dryRun ? ` · ${yellow("DRY RUN")}` : ""}`))
 
-  // Kick off every classification now; the UI awaits per-item Deferreds.
+  // ---- Stream details and classifications. The UI awaits per-item Deferreds.
+  const details = new Map<number, Deferred.Deferred<TriageItem, GitHubError>>()
   const assessments = new Map<number, Deferred.Deferred<Assessment, ClassifyError>>()
-  for (const item of items) assessments.set(item.number, yield* Deferred.make<Assessment, ClassifyError>())
+  for (const n of numbers) {
+    details.set(n, yield* Deferred.make<TriageItem, GitHubError>())
+    assessments.set(n, yield* Deferred.make<Assessment, ClassifyError>())
+  }
+  const classify = (item: TriageItem) =>
+    Effect.gen(function*() {
+      const a = yield* classifier.classify(item)
+      yield* Effect.annotateCurrentSpan({
+        [SemanticConventions.OUTPUT_VALUE]: JSON.stringify({ category: a.category.choice, confidence: a.category.confidence, component: a.component.choice, complete: a.complete, inScope: a.inScope, cached: a.cached ?? false }),
+        [SemanticConventions.OUTPUT_MIME_TYPE]: "application/json"
+      })
+      return a
+    }).pipe(
+      Effect.withSpan("triage.classify", {
+        root: true,
+        attributes: {
+          ...classifyAttrs,
+          [SemanticConventions.OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.CHAIN,
+          [SemanticConventions.INPUT_VALUE]: `#${item.number} ${item.title}`,
+          [SemanticConventions.INPUT_MIME_TYPE]: "text/plain",
+          [SemanticConventions.METADATA]: JSON.stringify({ url: item.url, kind: item.kind }),
+          "github.number": item.number
+        }
+      })
+    )
+  const batches = Chunk.toReadonlyArray(Chunk.chunksOf(Chunk.fromIterable(numbers), 8))
   yield* Effect.forEach(
-    items,
-    (item) => Deferred.into(classifier.classify(item), assessments.get(item.number)!),
-    { concurrency: options.concurrency, discard: true }
+    batches,
+    (batch) =>
+      Effect.gen(function*() {
+        const nums = Chunk.toReadonlyArray(batch)
+        const exit = yield* Effect.exit(github.fetchItems(options.repo, nums))
+        if (Exit.isFailure(exit)) {
+          for (const n of nums) yield* Deferred.failCause(details.get(n)!, exit.cause)
+          return
+        }
+        const byNumber = new Map(exit.value.map((i) => [i.number, i] as const))
+        for (const n of nums) {
+          const item = byNumber.get(n)
+          if (!item) {
+            yield* Deferred.fail(details.get(n)!, new GitHubError({ message: `#${n} not found` }))
+            continue
+          }
+          yield* Deferred.succeed(details.get(n)!, item)
+          yield* Deferred.into(classify(item), assessments.get(n)!).pipe(Effect.forkDetach)
+        }
+      }),
+    { concurrency: Math.max(1, Math.min(4, Math.ceil(options.concurrency / 2))), discard: true }
   ).pipe(Effect.forkDetach)
 
   let handled = 0
   let index = 0
-  while (index < items.length) {
-    const item = items[index]!
+  while (index < numbers.length) {
+    const n = numbers[index]!
     yield* printReports(yield* executor.takeReports)
 
-    yield* Console.log("\n" + renderHeader(item, index, items.length, colors))
+    const detail = yield* Effect.exit(Deferred.await(details.get(n)!))
+    if (Exit.isFailure(detail)) {
+      yield* Console.log(red(`\n#${n}: could not load (${String(Cause.squash(detail.cause))}), skipping`))
+      index++
+      continue
+    }
+    const item = detail.value
+    yield* Console.log("\n" + renderHeader(item, index, numbers.length, colors))
+    if (item.linked.length > 0) {
+      const kind = item.kind === "issue" ? "linked PRs" : "closes issues"
+      const links = item.linked.map((l) => {
+        const who = isMaintainer(profile, l.author, l.authorAssociation) ? green(`@${l.author} maintainer`) : dim(`@${l.author}`)
+        return `${cyan(`#${l.number}`)} ${who}${l.isDraft ? dim(" draft") : ""}`
+      })
+      yield* Console.log(`  ${bold(kind)}: ${links.join("  ")} ${dim("· your action propagates to the first, the rest close as duplicates")}`)
+    }
     yield* Console.log(renderBody(item))
 
-    const deferred = assessments.get(item.number)!
+    const deferred = assessments.get(n)!
     if (!(yield* Deferred.isDone(deferred))) yield* Console.log(dim("  waiting for jev…"))
     const exit = yield* Effect.exit(Deferred.await(deferred))
     let plan: TriagePlan | null = null
@@ -114,7 +183,8 @@ export const runSession = Effect.fn("runSession")(function*(options: SessionOpti
     }
 
     const outcome = yield* triageOne(item, plan, assessment, options, me, profile).pipe(
-      Effect.withSpan("triage.item", {
+      Effect.withSpan("triage.decide", {
+        root: true,
         attributes: {
           [SemanticConventions.OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.CHAIN,
           [SemanticConventions.SESSION_ID]: sessionId,
@@ -151,13 +221,44 @@ export const runSession = Effect.fn("runSession")(function*(options: SessionOpti
       })
     )
     handled++
+    // Linked items that just received a propagated action are done too: pull
+    // them out of the remaining queue and log a decision so the next boot
+    // drops them as well.
+    const propagated = outcome.plan.propagations ?? []
+    if (propagated.length > 0) {
+      const done = new Set(propagated.map((p) => p.target.number))
+      const before = numbers.length
+      numbers = numbers.filter((n, i) => i <= index || !done.has(n))
+      const removed = before - numbers.length
+      if (removed > 0) yield* Console.log(dim(`  ${removed} linked item${removed === 1 ? "" : "s"} removed from the queue`))
+      for (const p of propagated) {
+        // Only targets that are in this queue matter for reconciliation.
+        const pending = details.get(p.target.number)
+        if (!pending) continue
+        const target = yield* Effect.exit(Deferred.await(pending))
+        const targetItem = Exit.isSuccess(target) ? target.value : null
+        if (!targetItem) continue
+        yield* appendDecision(
+          makeDecision({
+            repo: slug,
+            item: targetItem,
+            assessment: null,
+            plan: null,
+            chosen: p.plan.close ? "close" : outcome.action,
+            labelsAdded: p.plan.labelsToAdd,
+            assignees: p.plan.assignees,
+            dryRun: options.dryRun
+          })
+        )
+      }
+    }
     index++
   }
 
   const pending = yield* executor.pendingCount
   if (pending > 0) yield* Console.log(dim(`\nwaiting for ${pending} GitHub update${pending === 1 ? "" : "s"}…`))
   yield* printReports(yield* executor.drain)
-  yield* Console.log(bold(`\n${handled} of ${items.length} triaged${options.dryRun ? " (dry run, nothing was changed)" : ""}.`))
+  yield* Console.log(bold(`\n${handled} of ${numbers.length} triaged${options.dryRun ? " (dry run, nothing was changed)" : ""}.`))
 })
 
 /**
@@ -166,31 +267,40 @@ export const runSession = Effect.fn("runSession")(function*(options: SessionOpti
  * recent decision for, drop what no longer carries the queue label, and push
  * recently skipped items to the back of the line.
  */
-const reconcileQueue = Effect.fn("reconcileQueue")(function*(
+const reconcileQueue = Effect.fnUntraced(function*(
   github: GitHub["Service"],
   options: SessionOptions,
-  fetched: ReadonlyArray<TriageItem>
+  fetched: ReadonlyArray<number>
 ) {
   const slug = repoSlug(options.repo)
   const since = Date.now() - 7 * 86_400_000
   const decisions = (yield* readDecisions).filter((d) => d.repo === slug && !d.dryRun && new Date(d.ts).getTime() > since)
   const acted = new Set(decisions.filter((d) => d.chosen !== "skip").map((d) => d.number))
   const skipped = new Set(decisions.filter((d) => d.chosen === "skip").map((d) => d.number))
-  const suspects = fetched.filter((i) => acted.has(i.number))
+  const suspects = fetched.filter((n) => acted.has(n))
   const live = yield* Effect.forEach(
     suspects,
-    (i) => github.fetchLabels(options.repo, i.number).pipe(Effect.map((labels) => [i.number, labels] as const), Effect.orElseSucceed(() => [i.number, i.labels] as const)),
+    (n) => github.fetchLabels(options.repo, n).pipe(Effect.map((labels) => [n, labels] as const), Effect.orElseSucceed(() => [n, [options.label]] as const)),
     { concurrency: 8 }
   )
   const stillQueued = new Map(live)
-  const kept = fetched.filter((i) => {
-    const labels = stillQueued.get(i.number)
+  const kept = fetched.filter((n) => {
+    const labels = stillQueued.get(n)
     return labels === undefined || labels.includes(options.label)
   })
-  const front = kept.filter((i) => !skipped.has(i.number))
-  const back = kept.filter((i) => skipped.has(i.number))
-  return { items: [...front, ...back], dropped: fetched.length - kept.length, deferred: back.length }
+  const front = kept.filter((n) => !skipped.has(n))
+  const back = kept.filter((n) => skipped.has(n))
+  return { numbers: [...front, ...back], dropped: fetched.length - kept.length, deferred: back.length }
 })
+
+/** Run a boot step and print `✔ label · detail · Nms` when it finishes. */
+const step = <A, E, R>(label: string, effect: Effect.Effect<A, E, R>, detail: (a: A) => string) =>
+  Effect.gen(function*() {
+    const t0 = performance.now()
+    const a = yield* effect
+    yield* Console.log(`${green("✔")} ${label.padEnd(13)} ${dim(detail(a))} ${dim(`${Math.round(performance.now() - t0)}ms`)}`)
+    return a
+  })
 
 type Outcome =
   | { readonly _tag: "applied"; readonly action: ActionKind; readonly plan: ResolvedPlan }
@@ -199,7 +309,7 @@ type Outcome =
   | { readonly _tag: "quit" }
 
 /** One item: loop on the hotkey menu until something advances. */
-const triageOne = Effect.fn("triageOne")(function*(
+const triageOne = Effect.fnUntraced(function*(
   item: TriageItem,
   plan: TriagePlan | null,
   assessment: Assessment | null,
@@ -214,8 +324,16 @@ const triageOne = Effect.fn("triageOne")(function*(
     defaultValue: suggested ? { _tag: "accept" } : undefined,
     render: (keys, def) => renderLegend(keys, def !== undefined, suggested)
   })
-  const finish = (action: ActionKind, resolved: ResolvedPlan | null): Outcome =>
-    resolved ? { _tag: "applied", action, plan: resolved } : { _tag: "stay" }
+  const finish = (action: ActionKind, resolved: ResolvedPlan | null): Effect.Effect<Outcome> =>
+    Effect.gen(function*() {
+      if (!resolved) return { _tag: "stay" } satisfies Outcome
+      const propagations = propagate(item, action, resolved, profile)
+      if (propagations.length === 0) return { _tag: "applied", action, plan: resolved } satisfies Outcome
+      for (const p of propagations) {
+        yield* Console.log(`  ${cyan("↳")} ${bold(`#${p.target.number}`)} ${dim(p.target.kind === "pull_request" ? "PR" : "issue")} ${dim(p.why)}: ${describe(p.plan)}`)
+      }
+      return { _tag: "applied", action, plan: { ...resolved, propagations } } satisfies Outcome
+    })
 
   switch (choice._tag) {
     case "quit":
@@ -249,7 +367,7 @@ const triageOne = Effect.fn("triageOne")(function*(
       if (!resolved) return { _tag: "stay" } satisfies Outcome
       yield* Console.log(`  ${green("↳")} ${describe(resolved)}`)
       yield* Effect.annotateCurrentSpan({ "triage.chosen": plan.action, "triage.accepted": true, [SemanticConventions.OUTPUT_VALUE]: describe(resolved) })
-      return finish(plan.action, resolved)
+      return yield* finish(plan.action, resolved)
     }
     case "action": {
       if (choice.action === "skip") return { _tag: "skip" } satisfies Outcome
@@ -257,7 +375,7 @@ const triageOne = Effect.fn("triageOne")(function*(
       if (resolved) {
         yield* Effect.annotateCurrentSpan({ "triage.chosen": choice.action, "triage.accepted": plan?.action === choice.action, [SemanticConventions.OUTPUT_VALUE]: describe(resolved) })
       }
-      return finish(choice.action, resolved)
+      return yield* finish(choice.action, resolved)
     }
   }
 })
@@ -325,7 +443,7 @@ const renderLegend = (keys: ReadonlyArray<Hotkey<MenuChoice>>, hasDefault: boole
 /**
  * `assignee`: undefined → use the suggestion; null → nobody; string → that login.
  */
-const quickApply = Effect.fn("quickApply")(function*(item: TriageItem, plan: TriagePlan, assessment: Assessment, profile: RepoProfile, assignee?: string | null) {
+const quickApply = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan, assessment: Assessment, profile: RepoProfile, assignee?: string | null) {
   const ctx = { author: item.author, number: item.number, title: item.title }
   const NEEDS_INFO_LABEL = workflowLabel(profile, "needsInfo")
   const BACKLOG_LABEL = workflowLabel(profile, "backlog")
@@ -443,7 +561,7 @@ const pickTemplate = (templates: ReadonlyArray<Template>, item: TriageItem) =>
     ]
   })
 
-const composeComment = Effect.fn("composeComment")(function*(item: TriageItem, templates: ReadonlyArray<Template>) {
+const composeComment = Effect.fnUntraced(function*(item: TriageItem, templates: ReadonlyArray<Template>) {
   const template = yield* pickTemplate(templates, item)
   const initial = template ? renderTemplate(template, { author: item.author, number: item.number, title: item.title }) : ""
   const needsEdit = template === null || /#NNN/.test(initial)
@@ -459,7 +577,7 @@ const composeComment = Effect.fn("composeComment")(function*(item: TriageItem, t
 
 const confirmPlan = (resolved: ResolvedPlan) => Prompt.Confirm({ message: `Apply: ${describe(resolved)}?`, initial: true })
 
-const flowNeedsInfo = Effect.fn("flowNeedsInfo")(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
+const flowNeedsInfo = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
   const composed = yield* composeComment(item, NEEDS_INFO_TEMPLATES)
   if (!composed) return null
   const resolved: ResolvedPlan = {
@@ -473,7 +591,7 @@ const flowNeedsInfo = Effect.fn("flowNeedsInfo")(function*(item: TriageItem, pla
   return (yield* confirmPlan(resolved)) ? resolved : null
 })
 
-const flowBug = Effect.fn("flowBug")(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
+const flowBug = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
   const labels = yield* pickLabels(item, profile, plan?.labelsToAdd ?? dedupe(item, [workflowLabel(profile, "bug")]))
   const owner = yield* pickPerson(profile, "Assign to", plan?.suggestedAssignees ?? [], true)
   const resolved: ResolvedPlan = {
@@ -487,7 +605,7 @@ const flowBug = Effect.fn("flowBug")(function*(item: TriageItem, plan: TriagePla
   return (yield* confirmPlan(resolved)) ? resolved : null
 })
 
-const flowFeature = Effect.fn("flowFeature")(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
+const flowFeature = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
   const BACKLOG_LABEL = workflowLabel(profile, "backlog")
   const ROADMAP_LABEL = workflowLabel(profile, "roadmap")
   const when = yield* Prompt.Select<"now" | "backlog" | "roadmap">({
@@ -512,7 +630,7 @@ const flowFeature = Effect.fn("flowFeature")(function*(item: TriageItem, plan: T
   return (yield* confirmPlan(resolved)) ? resolved : null
 })
 
-const flowReview = Effect.fn("flowReview")(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
+const flowReview = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
   const labels = yield* pickLabels(item, profile, plan?.labelsToAdd ?? [])
   const suggestedUsers = plan?.suggestedReviewers.users ?? []
   const suggestedTeams = plan?.suggestedReviewers.teams ?? []
@@ -540,7 +658,7 @@ const flowReview = Effect.fn("flowReview")(function*(item: TriageItem, plan: Tri
   return (yield* confirmPlan(resolved)) ? resolved : null
 })
 
-const flowClose = Effect.fn("flowClose")(function*(item: TriageItem, plan: TriagePlan | null, _assessment: Assessment | null, profile: RepoProfile) {
+const flowClose = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, _assessment: Assessment | null, profile: RepoProfile) {
   const composed = yield* composeComment(item, CLOSE_TEMPLATES)
   if (!composed) return null
   const resolved: ResolvedPlan = {
