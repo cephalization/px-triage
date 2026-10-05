@@ -1,0 +1,7 @@
+allowBuilds:
+  esbuild: true
+minimumReleaseAgeExclude:
+  - '@effect/platform-node-shared@4.0.1'
+  - '@effect/platform-node@4.0.1'
+  - effect@4.0.1
+  - '@effect/opentelemetry@4.0.1'

@@ -1,0 +1,64 @@
+{
+  "name": "px-triage",
+  "version": "0.1.0",
+  "description": "Absurdly fast issue/PR triage for arize-ai/phoenix, powered by Effect and TypeSafe Jev",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "pxt": "./bin/pxt.js",
+    "px-triage": "./bin/pxt.js"
+  },
+  "scripts": {
+    "dev": "pnpm run link && tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "link": "node scripts/link.mjs",
+    "unlink": "node scripts/link.mjs --remove",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node bin/pxt.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "packageManager": "pnpm@11.24.0",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.24.0",
+      "onFail": "download"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@arizeai/openinference-core": "^2.8.0",
+    "@arizeai/openinference-instrumentation-typesafe": "^0.1.0",
+    "@arizeai/openinference-semantic-conventions": "^2.14.0",
+    "@effect/opentelemetry": "4.0.1",
+    "@effect/platform-node": "4.0.1",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.222.0",
+    "@opentelemetry/context-async-hooks": "^2.11.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-logs": "^0.222.0",
+    "@opentelemetry/sdk-metrics": "^2.11.0",
+    "@opentelemetry/sdk-trace-base": "^2.11.0",
+    "@opentelemetry/sdk-trace-node": "^2.11.0",
+    "@opentelemetry/sdk-trace-web": "^2.11.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
+    "@typesafe-ai/sdk": "0.6.0",
+    "effect": "4.0.1"
+  },
+  "devDependencies": {
+    "@effect/vitest": "^4.0.0",
+    "@types/node": "^26.6.4",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ]
+}
