@@ -5,18 +5,8 @@
 import type { Assessment } from "../classify/Classifier.js"
 import { THRESHOLDS as DEFAULT_THRESHOLDS, type ComponentKey, type IssueCategory, type LanguageKey, type PrCategory } from "../classify/questions.js"
 import type { TriageItem } from "../github/model.js"
-import {
-  BUG_LABEL,
-  COMPONENT_LABEL,
-  DOCS_LABEL,
-  ENHANCEMENT_LABEL,
-  LANGUAGE_LABEL,
-  NEEDS_INFO_LABEL,
-  PRIORITY_LABELS,
-  TRIAGE_LABEL,
-  codeownerTeamsFor,
-  rankTeammates
-} from "./roster.js"
+import type { RepoProfile } from "./profile.js"
+import { TRIAGE_LABEL, codeownerTeamsFor, priorityLabel, rankTeammates, workflowLabel } from "./roster.js"
 
 export type ActionKind = "needs_info" | "bug" | "feature" | "review" | "close" | "skip"
 
@@ -34,15 +24,19 @@ export interface TriagePlan {
   readonly language: LanguageKey
 }
 
-const uniq = <A>(xs: Iterable<A>): Array<A> => [...new Set(xs)]
-
 const isIssueCategory = (c: string): c is IssueCategory =>
   ["bug_report", "feature_request", "question_or_support", "documentation", "off_topic_or_promotional", "spam_or_nonsense"].includes(c)
 
 export type Thresholds = { -readonly [K in keyof typeof DEFAULT_THRESHOLDS]: number }
 
-export const suggestPlan = (item: TriageItem, a: Assessment, THRESHOLDS: Thresholds = DEFAULT_THRESHOLDS): TriagePlan => {
+const compact = (labels: ReadonlyArray<string | null>): Array<string> => [...new Set(labels.filter((l): l is string => l !== null))]
+
+export const suggestPlan = (item: TriageItem, a: Assessment, profile: RepoProfile, THRESHOLDS: Thresholds = DEFAULT_THRESHOLDS): TriagePlan => {
   const rationale: Array<string> = []
+  const BUG_LABEL = workflowLabel(profile, "bug")
+  const ENHANCEMENT_LABEL = workflowLabel(profile, "enhancement")
+  const DOCS_LABEL = workflowLabel(profile, "docs")
+  const NEEDS_INFO_LABEL = workflowLabel(profile, "needsInfo")
   const uncertain = a.category.confidence < THRESHOLDS.categoryConfidenceFloor
   if (uncertain) {
     rationale.push(`category confidence ${pct(a.category.confidence)} is below the ${pct(THRESHOLDS.categoryConfidenceFloor)} floor`)
@@ -54,15 +48,15 @@ export const suggestPlan = (item: TriageItem, a: Assessment, THRESHOLDS: Thresho
   const languageProb = a.language.probabilities[language] ?? 0
 
   const metaLabels: Array<string> = []
-  const compLabel = COMPONENT_LABEL[component]
+  const compLabel = profile.componentLabels[component]
   if (compLabel && componentProb >= THRESHOLDS.componentLabelMinProbability) metaLabels.push(compLabel)
-  const langLabel = LANGUAGE_LABEL[language]
+  const langLabel = profile.languageLabels[language]
   if (langLabel && languageProb >= THRESHOLDS.languageLabelMinProbability) metaLabels.push(langLabel)
 
-  const assignees = rankTeammates(component, language).map((t) => t.login)
+  const assignees = rankTeammates(profile, component, language).map((t) => t.login)
   const reviewers = {
     users: assignees.slice(0, 3),
-    teams: item.pr ? codeownerTeamsFor(item.pr.files.map((f) => f.path)) : []
+    teams: item.pr ? codeownerTeamsFor(profile, item.pr.files.map((f) => f.path)) : []
   }
 
   const base = {
@@ -86,12 +80,12 @@ export const suggestPlan = (item: TriageItem, a: Assessment, THRESHOLDS: Thresho
     }
     if (incomplete) {
       rationale.push(`description completeness ${pct(a.complete)} is below ${pct(THRESHOLDS.needsInfoBelow)}`)
-      return { ...base, action: "needs_info", rationale, labelsToAdd: uniq([NEEDS_INFO_LABEL, ...metaLabels]) }
+      return { ...base, action: "needs_info", rationale, labelsToAdd: compact([NEEDS_INFO_LABEL, ...metaLabels]) }
     }
     const typeLabel = cat === "bug_fix" ? BUG_LABEL : cat === "feature" ? ENHANCEMENT_LABEL : cat === "documentation" ? DOCS_LABEL : null
     rationale.push(`PR looks like a ${cat.replaceAll("_", " ")}` + (a.risk ? `, review risk level ${a.risk.score}` : ""))
     if (item.pr?.linkedIssues.length) rationale.push(`closes ${item.pr.linkedIssues.map((i) => `#${i.number}`).join(", ")}`)
-    return { ...base, action: "review", rationale, labelsToAdd: uniq([...(typeLabel ? [typeLabel] : []), ...metaLabels]) }
+    return { ...base, action: "review", rationale, labelsToAdd: compact([typeLabel, ...metaLabels]) }
   }
 
   // ---- Issues -------------------------------------------------------------
@@ -106,22 +100,21 @@ export const suggestPlan = (item: TriageItem, a: Assessment, THRESHOLDS: Thresho
   }
   if (incomplete) {
     rationale.push(`reproducibility ${pct(a.complete)} is below ${pct(THRESHOLDS.needsInfoBelow)}`)
-    return { ...base, action: "needs_info", rationale, labelsToAdd: uniq([NEEDS_INFO_LABEL, ...metaLabels]) }
+    return { ...base, action: "needs_info", rationale, labelsToAdd: compact([NEEDS_INFO_LABEL, ...metaLabels]) }
   }
   if (cat === "bug_report") {
-    const labels = [BUG_LABEL, ...metaLabels]
+    const labels: Array<string | null> = [BUG_LABEL, ...metaLabels]
     if (a.severity && a.severity.confidence >= THRESHOLDS.severityConfidenceFloor) {
-      const p = PRIORITY_LABELS[Math.min(a.severity.score, PRIORITY_LABELS.length - 1)]
-      if (p) labels.push(p)
+      labels.push(priorityLabel(profile, a.severity.score))
       rationale.push(`severity level ${a.severity.score} (${pct(a.severity.confidence)} confident)`)
     }
     rationale.push(`reproducibility ${pct(a.complete)}`)
-    return { ...base, action: "bug", rationale, labelsToAdd: uniq(labels) }
+    return { ...base, action: "bug", rationale, labelsToAdd: compact(labels) }
   }
   // feature_request or documentation
-  const labels = [cat === "documentation" ? DOCS_LABEL : ENHANCEMENT_LABEL, ...metaLabels]
+  const labels = [cat === "documentation" ? DOCS_LABEL ?? ENHANCEMENT_LABEL : ENHANCEMENT_LABEL, ...metaLabels]
   if (a.value) rationale.push(`value level ${a.value.score} (${pct(a.value.confidence)} confident)`)
-  return { ...base, action: "feature", rationale, labelsToAdd: uniq(labels) }
+  return { ...base, action: "feature", rationale, labelsToAdd: compact(labels) }
 }
 
 export const pct = (p: number): string => `${Math.round(p * 100)}%`

@@ -8,6 +8,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { Console, Context, Effect, FileSystem, Layer, Redacted, Schema } from "effect"
 import { Prompt } from "effect/cli"
+import { PHOENIX_CONTEXT } from "../classify/questions.js"
 import { bold, cyan, dim, green } from "../ui/ansi.js"
 
 export const PhoenixConfig = Schema.Struct({
@@ -18,11 +19,21 @@ export const PhoenixConfig = Schema.Struct({
 })
 export type PhoenixConfig = typeof PhoenixConfig.Type
 
+/** Per-repository settings, keyed by `owner/name` under `repos`. */
+export const RepoConfig = Schema.Struct({
+  /** What the project is; sent to Jev as context for every question. Edit freely. */
+  description: Schema.optional(Schema.String),
+  /** Queue label (defaults to "triage"). */
+  label: Schema.optional(Schema.String)
+})
+export type RepoConfig = typeof RepoConfig.Type
+
 export const ConfigFile = Schema.Struct({
   typesafeApiKey: Schema.String,
   model: Schema.optional(Schema.String),
   repo: Schema.optional(Schema.String),
-  phoenix: Schema.optional(PhoenixConfig)
+  phoenix: Schema.optional(PhoenixConfig),
+  repos: Schema.optional(Schema.Record(Schema.String, RepoConfig))
 })
 export type ConfigFile = typeof ConfigFile.Type
 
@@ -41,6 +52,10 @@ export class AppConfig extends Context.Service<AppConfig, {
   readonly config: ConfigFile
   /** True when this run created the config file. */
   readonly fresh: boolean
+  /** Settings for one repo (empty object when none are saved). */
+  readonly repoConfig: (slug: string) => RepoConfig
+  /** Merge settings for one repo and persist the file. */
+  readonly updateRepo: (slug: string, patch: RepoConfig) => Effect.Effect<void, ConfigError>
 }>()("px-triage/config/AppConfig") {
   static readonly layer = Layer.effect(
     AppConfig,
@@ -48,6 +63,7 @@ export class AppConfig extends Context.Service<AppConfig, {
       const fs = yield* FileSystem.FileSystem
       const exists = yield* fs.exists(CONFIG_FILE).pipe(Effect.orElseSucceed(() => false))
       let fresh = false
+      let persist = true
       let file: ConfigFile
       if (exists) {
         const raw = yield* fs.readFileString(CONFIG_FILE).pipe(
@@ -57,14 +73,24 @@ export class AppConfig extends Context.Service<AppConfig, {
           Effect.mapError((cause) => new ConfigError({ message: `${CONFIG_FILE} is invalid; fix it or delete it to re-run onboarding`, cause }))
         )
       } else if (process.env["TYPESAFE_API_KEY"]) {
-        // Non-interactive environments can run purely from env.
+        // Non-interactive environments can run purely from env. Never write
+        // that secret to disk on the user's behalf.
         file = { typesafeApiKey: process.env["TYPESAFE_API_KEY"] }
+        persist = false
       } else {
         file = yield* runOnboarding
         yield* writeConfig(file)
         fresh = true
       }
-      return AppConfig.of({ config: applyEnvOverrides(file), fresh })
+      let current = file
+      const repoConfig = (slug: string): RepoConfig => current.repos?.[slug.toLowerCase()] ?? current.repos?.[slug] ?? {}
+      const updateRepo = (slug: string, patch: RepoConfig) =>
+        Effect.gen(function*() {
+          const key = slug.toLowerCase()
+          current = { ...current, repos: { ...(current.repos ?? {}), [key]: { ...repoConfig(slug), ...patch } } }
+          if (persist) yield* writeConfig(current, { quiet: true })
+        }).pipe(Effect.provideService(FileSystem.FileSystem, fs))
+      return AppConfig.of({ config: applyEnvOverrides(file), fresh, repoConfig, updateRepo })
     })
   )
 }
@@ -87,12 +113,12 @@ const applyEnvOverrides = (file: ConfigFile): ConfigFile => {
   }
 }
 
-export const writeConfig = (file: ConfigFile) =>
+export const writeConfig = (file: ConfigFile, options?: { readonly quiet?: boolean }) =>
   Effect.gen(function*() {
     const fs = yield* FileSystem.FileSystem
     yield* fs.makeDirectory(CONFIG_DIR, { recursive: true })
     yield* fs.writeFileString(CONFIG_FILE, JSON.stringify(file, null, 2) + "\n", { mode: 0o600 })
-    yield* Console.log(dim(`saved ${CONFIG_FILE}`))
+    if (!options?.quiet) yield* Console.log(dim(`saved ${CONFIG_FILE}`))
   }).pipe(Effect.mapError((cause) => new ConfigError({ message: `Could not write ${CONFIG_FILE}`, cause })))
 
 /** Interactive first-run setup. Keys are typed by the user and stored locally (mode 600). */
@@ -106,6 +132,11 @@ export const runOnboarding = Effect.gen(function*() {
   })
 
   const repo = yield* Prompt.String({ message: "Default repository (owner/name)", default: "arize-ai/phoenix" })
+  const isPhoenix = repo.trim().toLowerCase() === "arize-ai/phoenix"
+  const description = yield* Prompt.String({
+    message: "One-paragraph description of the project, sent to Jev as context (leave empty to seed from GitHub on first run)",
+    default: isPhoenix ? PHOENIX_CONTEXT : ""
+  })
 
   const trace = yield* Prompt.Confirm({
     message: "Send classification traces to Phoenix (OpenInference LLM spans)?",
@@ -128,7 +159,8 @@ export const runOnboarding = Effect.gen(function*() {
   const file: ConfigFile = {
     typesafeApiKey: Redacted.value(key).trim(),
     repo: repo.trim(),
-    ...(phoenix ? { phoenix } : {})
+    ...(phoenix ? { phoenix } : {}),
+    ...(description.trim() ? { repos: { [repo.trim().toLowerCase()]: { description: description.trim() } } } : {})
   }
   return file
 })

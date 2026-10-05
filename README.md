@@ -42,7 +42,10 @@ jev jev-1.13.0 · 412ms · 1830 tok
    guided flow (templates, label multi-select, owner autocomplete, `$EDITOR`).
 5. **GitHub mutations run in background fibers**; results are printed before
    the next prompt and drained before exit. `--dry-run` prints them instead.
-6. Every decision (suggested vs chosen) is appended to
+6. On boot, items that already have a logged decision are re-checked against
+   live labels and dropped if `triage` is gone (GitHub's search index lags by
+   minutes), and items you skipped move to the end of the queue.
+7. Every decision (suggested vs chosen) is appended to
    `~/.px-triage/decisions.jsonl`, and each item is traced to **Phoenix** as an
    OpenInference `CHAIN` span containing the Jev `LLM` span (input state,
    output answers, token counts).
@@ -72,6 +75,23 @@ Onboarding asks for the TypeSafe API key (https://console.typesafe.ai/keys),
 the default repo, and optional Phoenix tracing (URL, API key, project name).
 GitHub auth comes from `GITHUB_TOKEN` / `GH_TOKEN` or `gh auth token`.
 
+Per-repo settings live under `repos` in the same file, keyed by `owner/name`:
+
+```json
+"repos": {
+  "arize-ai/phoenix": {
+    "description": "Arize Phoenix is an open-source LLM observability and evaluation platform: …",
+    "label": "triage"
+  }
+}
+```
+
+`description` is the project context Jev sees in every question, so it is the
+single most useful thing to edit when suggestions feel generic. Onboarding asks
+for it; for any other repo it is seeded from the GitHub description, topics,
+and primary language on first use. Changing it invalidates the classification
+cache for that repo.
+
 Environment overrides: `TYPESAFE_API_KEY`, `PX_TRIAGE_MODEL`, `PX_TRIAGE_REPO`,
 `PHOENIX_COLLECTOR_ENDPOINT`, `PHOENIX_API_KEY`, `PHOENIX_PROJECT_NAME`,
 `PX_TRIAGE_HOME` (config directory).
@@ -83,9 +103,25 @@ pnpm triage                          # walk the queue
 pnpm triage -- --only prs --dry-run  # preview PR triage, change nothing
 pnpm triage -- --number 1234         # one item
 pnpm triage -- train --limit 200     # replay history, report agreement
+pnpm triage -- roster --refresh      # regenerate the repo profile (owners, labels)
 pnpm triage -- init                  # redo onboarding
 pnpm test                            # planner unit tests
 ```
+
+### `roster`
+
+Nothing about a repository is hard-coded. On first use (and again after 7
+days, or with `pxt roster --refresh`) px-triage builds a **repo profile** from
+GitHub and caches it at `~/.px-triage/profiles/<owner>-<name>.json`:
+
+- all labels with colors, and which label maps to each classifier component
+  (`c/ui` → `ui`, `documentation` → `docs`, …; aliases live in `roster.ts`)
+- teammates inferred from the last ~250 closed issues and ~150 merged PRs:
+  who gets assigned what, who reviews what, which languages they touch
+- CODEOWNERS teams per path prefix, used to suggest PR reviewers
+
+`pxt roster` prints it; `pxt roster --json` dumps the raw profile. Bots are
+filtered out. If a repo spells a label differently, add it to the alias tables.
 
 ### `train`
 
@@ -108,7 +144,8 @@ editing `questions.ts` (instructions, criteria, thresholds) and re-running.
 ## Where to look
 
 - `src/classify/questions.ts` — every Jev question and threshold. **Review this file.**
-- `src/triage/roster.ts` — who owns what; label and CODEOWNERS mappings.
+- `src/triage/profile.ts` — generates and caches the per-repo profile (labels, owners, reviewers, CODEOWNERS).
+- `src/triage/roster.ts` — alias tables mapping a repo's labels onto the classifier's component/language keys, plus owner ranking.
 - `src/triage/templates.ts` — comment templates.
 - `src/triage/plan.ts` — routing logic (`suggestPlan`), tests in `plan.test.ts`.
 - `src/triage/session.ts` — the hotkey loop, quick-accept defaults, guided flows.

@@ -1,208 +1,123 @@
 /**
- * Team roster, label mappings, and reviewer routing for arize-ai/phoenix.
+ * Repo-agnostic roster helpers. The actual people, labels, and CODEOWNERS
+ * come from a generated RepoProfile (see profile.ts); this file holds the
+ * alias tables that map a repo's labels onto the classifier's fixed component
+ * and language keys, plus the ranking logic.
  *
- * This file is meant to be edited by humans. The initial entries were derived
- * from who has actually been assigned issues / reviewed PRs per `c/*` label
- * over the last few hundred items, so treat them as a starting point.
+ * Add aliases here when a repo names things differently.
  */
 import type { ComponentKey, LanguageKey } from "../classify/questions.js"
+import type { RepoProfile, Teammate } from "./profile.js"
 
-export interface Teammate {
-  readonly login: string
-  /** Components this person usually owns. Order matters: first is strongest. */
-  readonly areas: ReadonlyArray<ComponentKey>
-  readonly languages: ReadonlyArray<Exclude<LanguageKey, "not_applicable">>
-  readonly note?: string
+export const COMPONENT_LABEL_ALIASES: Record<ComponentKey, ReadonlyArray<string>> = {
+  ui: ["c/ui", "ui", "area: ui", "frontend", "web", "app"],
+  server: ["c/server", "server", "area: server", "backend"],
+  evals: ["c/evals", "evals", "evaluation", "evaluators"],
+  traces: ["c/traces", "traces", "tracing", "spans"],
+  playground: ["c/playground", "playground"],
+  client: ["c/client", "client", "sdk", "clients"],
+  cli: ["c/cli", "cli"],
+  prompts: ["c/prompts", "prompts", "prompt management"],
+  datasets: ["c/datasets", "datasets", "dataset"],
+  experiments: ["c/experiments", "experiments", "experiment"],
+  sessions: ["c/sessions", "sessions"],
+  annotations: ["c/annotations", "annotations", "feedback"],
+  auth: ["c/auth", "auth", "authentication", "c/rbac", "rbac", "security"],
+  otel_instrumentation: ["c/otel", "otel", "instrumentation", "opentelemetry", "openinference"],
+  helm_infra: ["c/helm", "helm", "c/infra", "infra", "infrastructure", "kubernetes", "docker", "deployment"],
+  mcp: ["c/mcp", "mcp"],
+  agents: ["c/agents", "agents", "agent"],
+  api: ["c/api", "api", "graphql", "rest"],
+  docs: ["documentation", "docs", "c/docs"],
+  unclear: []
 }
 
-export const ROSTER: ReadonlyArray<Teammate> = [
-  {
-    login: "axiomofjoy",
-    areas: ["server", "traces", "otel_instrumentation", "agents", "mcp", "api", "evals", "datasets"],
-    languages: ["python"],
-    note: "Most-assigned maintainer overall; server + Python"
-  },
-  {
-    login: "mikeldking",
-    areas: ["ui", "client", "cli", "api", "traces", "playground", "sessions", "annotations"],
-    languages: ["typescript", "python"],
-    note: "Project lead; UI + TS client"
-  },
-  {
-    login: "cephalization",
-    areas: ["ui", "playground", "agents", "evals", "annotations", "client"],
-    languages: ["typescript"],
-    note: "UI + TypeScript"
-  },
-  {
-    login: "anticorrelator",
-    areas: ["server", "traces", "experiments", "prompts", "ui", "client", "otel_instrumentation", "auth"],
-    languages: ["python"],
-    note: "Server internals, traces, experiments"
-  },
-  {
-    login: "ehutt",
-    areas: ["evals", "experiments", "datasets", "client", "docs"],
-    languages: ["python"],
-    note: "phoenix-evals"
-  },
-  {
-    login: "yfrigui2",
-    areas: ["playground", "experiments", "cli", "traces", "agents"],
-    languages: ["python", "typescript"]
-  },
-  {
-    login: "rickarize",
-    areas: ["ui", "evals", "datasets", "mcp"],
-    languages: ["typescript", "python"]
-  },
-  {
-    login: "blindmansion",
-    areas: ["cli", "client"],
-    languages: ["typescript"]
-  },
-  {
-    login: "MoraVigoMalusardi",
-    areas: ["cli", "evals", "docs", "otel_instrumentation", "mcp"],
-    languages: ["python"]
-  },
-  {
-    login: "Nancy-Chauhan",
-    areas: ["docs", "otel_instrumentation", "mcp"],
-    languages: ["python"]
-  },
-  {
-    login: "ArcticFaded",
-    areas: ["helm_infra"],
-    languages: ["python"]
-  }
-]
-
-/** `c/*` style label for each classifier component. `null` means "no label". */
-export const COMPONENT_LABEL: Record<ComponentKey, string | null> = {
-  ui: "c/ui",
-  server: "c/server",
-  evals: "c/evals",
-  traces: "c/traces",
-  playground: "c/playground",
-  client: "c/client",
-  cli: "c/cli",
-  prompts: "c/prompts",
-  datasets: "c/datasets",
-  experiments: "c/experiments",
-  sessions: "c/sessions",
-  annotations: "c/annotations",
-  auth: "c/auth",
-  otel_instrumentation: "c/otel",
-  helm_infra: "c/helm",
-  mcp: "c/mcp",
-  agents: "c/agents",
-  api: "c/api",
-  docs: "documentation",
-  unclear: null
+export const LANGUAGE_LABEL_ALIASES: Record<LanguageKey, ReadonlyArray<string>> = {
+  python: ["language: python", "python", "lang: python", "py"],
+  typescript: ["language: typescript", "typescript", "javascript", "lang: typescript", "ts", "js"],
+  not_applicable: []
 }
 
-export const LANGUAGE_LABEL: Record<LanguageKey, string | null> = {
-  python: "language: python",
-  typescript: "language: typescript",
-  not_applicable: null
-}
+/** Common workflow labels, with fallbacks when the repo spells them differently. */
+export const WORKFLOW_LABEL_ALIASES = {
+  needsInfo: ["needs information", "needs info", "needs-more-info", "more info needed", "question", "waiting for response"],
+  bug: ["bug", "type: bug", "kind/bug"],
+  enhancement: ["enhancement", "feature", "feature request", "type: feature", "kind/feature"],
+  docs: ["documentation", "docs"],
+  question: ["question", "support"],
+  wontfix: ["wontfix", "won't fix", "not planned"],
+  duplicate: ["duplicate"],
+  invalid: ["invalid", "spam"],
+  backlog: ["backlog"],
+  roadmap: ["roadmap", "planned"],
+  cannotReproduce: ["cannot reproduce", "can't reproduce", "unreproducible"]
+} as const
+export type WorkflowLabelKey = keyof typeof WORKFLOW_LABEL_ALIASES
 
 /** Ordered by severity / value score index (0 = lowest). */
-export const PRIORITY_LABELS = ["priority: low", "priority: medium", "priority: high"] as const
-
-export const TRIAGE_LABEL = "triage"
-export const NEEDS_INFO_LABEL = "needs information"
-export const BUG_LABEL = "bug"
-export const ENHANCEMENT_LABEL = "enhancement"
-export const DOCS_LABEL = "documentation"
-export const QUESTION_LABEL = "question"
-export const WONTFIX_LABEL = "wontfix"
-export const DUPLICATE_LABEL = "duplicate"
-export const INVALID_LABEL = "invalid"
-export const BACKLOG_LABEL = "backlog"
-export const ROADMAP_LABEL = "roadmap"
-export const AGENT_LABEL = "agents"
-
-/** Mirrors .github/CODEOWNERS so PR reviewers can fall back to a team. */
-export const CODEOWNER_TEAMS: ReadonlyArray<{ readonly prefix: string; readonly teams: ReadonlyArray<string> }> = [
-  { prefix: "js/", teams: ["oss-javascript"] },
-  { prefix: "app/", teams: ["oss-javascript", "oss-design"] },
-  { prefix: "src/", teams: ["oss-python"] },
-  { prefix: "packages/", teams: ["oss-python"] },
-  { prefix: "examples/", teams: ["dev-rel", "oss-eng"] },
-  { prefix: "tutorials/", teams: ["dev-rel", "oss-eng"] }
+export const PRIORITY_LABEL_ALIASES: ReadonlyArray<ReadonlyArray<string>> = [
+  ["priority: low", "p3", "low priority", "priority/low"],
+  ["priority: medium", "p2", "medium priority", "priority/medium"],
+  ["priority: high", "p1", "high priority", "priority/high"]
 ]
 
-/** Hex colors for the labels we render as chips (from the repo). */
-export const LABEL_COLORS: Record<string, string> = {
-  bug: "d73a4a",
-  documentation: "0075ca",
-  duplicate: "cfd3d7",
-  enhancement: "a2eeef",
-  question: "d876e3",
-  wontfix: "ffffff",
-  invalid: "e4e669",
-  triage: "FBCA04",
-  "needs information": "2E4C95",
-  backlog: "0E82FA",
-  roadmap: "D5B9A6",
-  "priority: highest": "FF0000",
-  "priority: high": "D93F0B",
-  "priority: medium": "FBCA04",
-  "priority: low": "0E8A16",
-  "language: python": "bc8149",
-  "language: typescript": "1d4394",
-  "c/ui": "AAB2F4",
-  "c/server": "462EB2",
-  "c/evals": "A257A1",
-  "c/traces": "BEBEAC",
-  "c/playground": "C94FF8",
-  "c/client": "006b75",
-  "c/cli": "1D76DB",
-  "c/prompts": "f9d0c4",
-  "c/experiments": "34234D",
-  "c/agents": "8dbadd",
-  "c/api": "7DE9DA",
-  "c/auth": "220A13",
-  "c/annotations": "FB8B90",
-  "c/mcp": "aaaaaa",
-  "c/otel": "aaaaaa",
-  "c/helm": "aaaaaa",
-  "c/datasets": "aaaaaa",
-  "c/sessions": "aaaaaa",
-  agents: "ededed",
-  "DO NOT MERGE": "D93F0B",
-  lgtm: "238636"
+export const TRIAGE_LABEL = "triage"
+
+const BOT_PATTERNS = [/\[bot\]$/i, /^dependabot/i, /^renovate/i, /^github-actions/i, /^copilot/i, /^claude$/i, /^codecov/i, /^ghost$/i]
+export const isBot = (login: string): boolean => BOT_PATTERNS.some((re) => re.test(login))
+
+/** First repo label matching any alias (case-insensitive), else the first alias as a best guess, else null. */
+export const resolveLabel = (profile: RepoProfile, aliases: ReadonlyArray<string>): string | null => {
+  const lower = new Map(profile.labels.map((l) => [l.name.toLowerCase(), l.name] as const))
+  for (const a of aliases) {
+    const hit = lower.get(a.toLowerCase())
+    if (hit) return hit
+  }
+  return null
+}
+
+export const workflowLabel = (profile: RepoProfile, key: WorkflowLabelKey): string | null =>
+  resolveLabel(profile, WORKFLOW_LABEL_ALIASES[key])
+
+export const priorityLabel = (profile: RepoProfile, level: number): string | null => {
+  const aliases = PRIORITY_LABEL_ALIASES[Math.min(Math.max(level, 0), PRIORITY_LABEL_ALIASES.length - 1)]
+  return aliases ? resolveLabel(profile, aliases) : null
 }
 
 /**
  * Rank teammates for a component + language. Primary area match beats a
- * secondary one; language agreement breaks ties.
+ * secondary one; language agreement and overall activity break ties.
  */
-export const rankTeammates = (
-  component: ComponentKey,
-  language: LanguageKey
-): ReadonlyArray<Teammate> => {
-  const scored = ROSTER.map((t) => {
+export const rankTeammates = (profile: RepoProfile, component: ComponentKey, language: LanguageKey): ReadonlyArray<Teammate> => {
+  const scored = profile.teammates.map((t) => {
     const idx = t.areas.indexOf(component)
     const areaScore = idx === -1 ? 0 : 10 - Math.min(idx, 8)
     const langScore = language !== "not_applicable" && t.languages.includes(language) ? 1 : 0
-    return { t, score: areaScore * 2 + langScore }
+    const activity = Math.min(1, (t.assigned * 3 + t.reviewed * 2 + t.authored) / 100)
+    return { t, score: areaScore * 2 + langScore + activity }
   })
-  return scored
-    .filter((s) => s.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .map((s) => s.t)
+  const matched = scored.filter((s) => s.score > 1).sort((a, b) => b.score - a.score).map((s) => s.t)
+  // No one owns this component yet: fall back to the most active people.
+  return matched.length > 0 ? matched : profile.teammates.slice(0, 3)
 }
 
 /** Teams from CODEOWNERS that cover any of the given file paths. */
-export const codeownerTeamsFor = (paths: ReadonlyArray<string>): ReadonlyArray<string> => {
+export const codeownerTeamsFor = (profile: RepoProfile, paths: ReadonlyArray<string>): ReadonlyArray<string> => {
   const teams = new Set<string>()
   for (const p of paths) {
-    for (const rule of CODEOWNER_TEAMS) {
-      if (p.startsWith(rule.prefix)) rule.teams.forEach((t) => teams.add(t))
+    for (const rule of profile.codeowners) {
+      if (rule.prefix === "" || p.startsWith(rule.prefix)) rule.teams.forEach((t) => teams.add(t))
     }
   }
   return [...teams]
+}
+
+export const codeownerUsersFor = (profile: RepoProfile, paths: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const users = new Set<string>()
+  for (const p of paths) {
+    for (const rule of profile.codeowners) {
+      if (rule.prefix === "" || p.startsWith(rule.prefix)) rule.users.forEach((u) => users.add(u))
+    }
+  }
+  return [...users]
 }

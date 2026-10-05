@@ -7,7 +7,7 @@
 import { Config, Context, Effect, Layer, Schedule, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { type Repo, TriageItem, repoSlug } from "./model.js"
+import { type Repo, RepoLabel, TriageItem, repoSlug } from "./model.js"
 
 export class GitHubError extends Schema.TaggedError<GitHubError>()("GitHubError", {
   message: Schema.String,
@@ -28,6 +28,16 @@ export class GitHub extends Context.Service<GitHub, {
   readonly viewer: Effect.Effect<string, GitHubError>
   readonly fetchTriageQueue: (options: FetchQueueOptions) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
   readonly fetchItem: (repo: Repo, number: number) => Effect.Effect<TriageItem, GitHubError>
+  /** Arbitrary GitHub issue/PR search (same fields as the queue). */
+  readonly search: (query: string, limit: number) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
+  /** Live labels on one issue/PR (REST, not the lagging search index). */
+  readonly fetchLabels: (repo: Repo, number: number) => Effect.Effect<ReadonlyArray<string>, GitHubError>
+  /** Repository metadata used to seed the per-repo description. */
+  readonly fetchRepoInfo: (repo: Repo) => Effect.Effect<{ description: string | null; topics: ReadonlyArray<string>; language: string | null }, GitHubError>
+  /** All labels defined on the repository. */
+  readonly listLabels: (repo: Repo) => Effect.Effect<ReadonlyArray<RepoLabel>, GitHubError>
+  /** Raw CODEOWNERS content, if the repo has one. */
+  readonly fetchCodeowners: (repo: Repo) => Effect.Effect<string | null, GitHubError>
   /** Items that already left the triage queue (for training / calibration). */
   readonly fetchHistory: (options: { readonly repo: Repo; readonly label: string; readonly limit: number }) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
   readonly addLabels: (repo: Repo, number: number, labels: ReadonlyArray<string>) => Effect.Effect<void, GitHubError>
@@ -101,6 +111,73 @@ export class GitHub extends Context.Service<GitHub, {
           after = data.search.pageInfo.endCursor
         }
         return items
+      })
+
+      const search = Effect.fn("GitHub.search")(function*(q: string, limit: number) {
+        const items: Array<TriageItem> = []
+        let after: string | null = null
+        while (items.length < limit) {
+          const first = Math.min(50, limit - items.length)
+          const data: typeof SearchData.Type = yield* graphql(SearchData, SEARCH_QUERY, { q, first, after })
+          for (const node of data.search.nodes) {
+            const item = toItem(node)
+            if (item) items.push(item)
+          }
+          if (!data.search.pageInfo.hasNextPage) break
+          after = data.search.pageInfo.endCursor
+        }
+        return items
+      })
+
+      const fetchLabels = Effect.fn("GitHub.fetchLabels")(function*(repo: Repo, number: number) {
+        const res = yield* client.get(`/repos/${repo.owner}/${repo.name}/issues/${number}`).pipe(
+          Effect.flatMap(HttpClientResponse.schemaBodyJson(Schema.Struct({ labels: Schema.Array(Schema.Struct({ name: Schema.String })) }))),
+          Effect.mapError(fail(`Failed to fetch labels for #${number}`))
+        )
+        return res.labels.map((l) => l.name)
+      })
+
+      const fetchRepoInfo = Effect.fn("GitHub.fetchRepoInfo")(function*(repo: Repo) {
+        const res = yield* client.get(`/repos/${repo.owner}/${repo.name}`).pipe(
+          Effect.flatMap(
+            HttpClientResponse.schemaBodyJson(
+              Schema.Struct({
+                description: Schema.NullOr(Schema.String),
+                topics: Schema.optional(Schema.Array(Schema.String)),
+                language: Schema.NullOr(Schema.String)
+              })
+            )
+          ),
+          Effect.mapError(fail("Failed to fetch repository info"))
+        )
+        return { description: res.description, topics: res.topics ?? [], language: res.language }
+      })
+
+      const listLabels = Effect.fn("GitHub.listLabels")(function*(repo: Repo) {
+        const all: Array<RepoLabel> = []
+        for (let pageNo = 1; pageNo <= 10; pageNo++) {
+          const batch = yield* client.get(`/repos/${repo.owner}/${repo.name}/labels`, { urlParams: { per_page: 100, page: pageNo } }).pipe(
+            Effect.flatMap(HttpClientResponse.schemaBodyJson(Schema.Array(RepoLabel))),
+            Effect.mapError(fail("Failed to list labels"))
+          )
+          all.push(...batch)
+          if (batch.length < 100) break
+        }
+        return all
+      })
+
+      const fetchCodeowners = Effect.fn("GitHub.fetchCodeowners")(function*(repo: Repo) {
+        for (const path of [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"]) {
+          const res = yield* base.get(`/repos/${repo.owner}/${repo.name}/contents/${path}`).pipe(
+            Effect.mapError(fail("Failed to read CODEOWNERS"))
+          )
+          if (res.status === 404) continue
+          const body = yield* HttpClientResponse.schemaBodyJson(Schema.Struct({ content: Schema.String }))(res).pipe(
+            Effect.mapError(fail("Failed to decode CODEOWNERS"))
+          )
+          return Buffer.from(body.content.replace(/\n/g, ""), "base64").toString("utf8")
+        }
+        return null
       })
 
       const fetchHistory = Effect.fn("GitHub.fetchHistory")(function*(options: { readonly repo: Repo; readonly label: string; readonly limit: number }) {
@@ -206,6 +283,11 @@ export class GitHub extends Context.Service<GitHub, {
 
       return GitHub.of({
         viewer,
+        search,
+        fetchLabels,
+        fetchRepoInfo,
+        listLabels,
+        fetchCodeowners,
         fetchTriageQueue,
         fetchHistory,
         fetchItem,
@@ -304,7 +386,7 @@ const PrNode = Schema.Struct({
   labels: Named,
   assignees: Logins,
   comments: Comments,
-  reviews: Schema.Struct({ totalCount: Schema.Int }),
+  reviews: Schema.Struct({ totalCount: Schema.Int, nodes: Schema.Array(Schema.Struct({ author: Actor })) }),
   reviewRequests: Schema.Struct({
     nodes: Schema.Array(
       Schema.Struct({
@@ -371,7 +453,7 @@ const PR_FRAGMENT = `
     labels(first: 30) { nodes { name } }
     assignees(first: 10) { nodes { login } }
     comments(first: 5) { totalCount nodes { author { login } body createdAt } }
-    reviews(first: 1) { totalCount }
+    reviews(first: 20) { totalCount nodes { author { login } } }
     reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } }
     files(first: 60) { nodes { path additions deletions } }
     closingIssuesReferences(first: 5) { nodes { number title } }
@@ -450,6 +532,7 @@ const toItem = (node: typeof SearchNode.Type): TriageItem | null => {
         baseRefName: n.baseRefName,
         files: n.files?.nodes ?? [],
         reviewCount: n.reviews.totalCount,
+        reviewers: [...new Set(n.reviews.nodes.flatMap((r) => (r.author ? [r.author.login] : [])))],
         requestedReviewers: n.reviewRequests.nodes.flatMap((r) => {
           const who = r.requestedReviewer?.login ?? (r.requestedReviewer?.slug ? `team:${r.requestedReviewer.slug}` : null)
           return who ? [who] : []

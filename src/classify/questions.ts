@@ -10,6 +10,11 @@ import { choice, noul, score } from "@typesafe-ai/sdk"
 
 export const DEFAULT_MODEL = "jev-latest"
 
+/**
+ * Default project description, used for arize-ai/phoenix and as the example in
+ * onboarding. Other repos get theirs from ~/.px-triage/config.json
+ * (`repos.<owner/name>.description`), seeded from GitHub on first use.
+ */
 export const PHOENIX_CONTEXT =
   "Arize Phoenix is an open-source LLM observability and evaluation platform: " +
   "a Python server (FastAPI, SQLAlchemy, SQLite/PostgreSQL) with a React + TypeScript web UI, " +
@@ -23,23 +28,23 @@ export const PHOENIX_CONTEXT =
 // ---------------------------------------------------------------------------
 
 export const ISSUE_CATEGORY = {
-  bug_report: "Reports that something in Phoenix behaves incorrectly, errors, or regressed. Includes bug reports written as questions ('why does X crash?').",
-  feature_request: "Asks for new functionality, a configuration option, or a change in Phoenix's behavior that is not currently supported.",
-  question_or_support: "Asks how to use, configure, deploy, or integrate Phoenix; a support request rather than a defect or a product change.",
+  bug_report: "Reports that something in the project behaves incorrectly, errors, or regressed. Includes bug reports written as questions ('why does X crash?').",
+  feature_request: "Asks for new functionality, a configuration option, or a change in the project's behavior that is not currently supported.",
+  question_or_support: "Asks how to use, configure, deploy, or integrate the project; a support request rather than a defect or a product change.",
   documentation: "Reports missing, wrong, or unclear documentation, or asks for docs/examples to be added or fixed (not promotional).",
-  off_topic_or_promotional: "Primarily promotes a third-party product, asks Phoenix to list or advertise an external service, or is unrelated to Phoenix.",
+  off_topic_or_promotional: "Primarily promotes a third-party product, asks the project to list or advertise an external service, or is unrelated to the project.",
   spam_or_nonsense: "Spam, gibberish, an empty template, or content with no actionable meaning."
 } as const
 export type IssueCategory = keyof typeof ISSUE_CATEGORY
 
 export const PR_CATEGORY = {
-  bug_fix: "Fixes incorrect behavior, an error, or a regression in Phoenix.",
+  bug_fix: "Fixes incorrect behavior, an error, or a regression in the project.",
   feature: "Adds new functionality, an option, an endpoint, or a user-visible capability.",
-  documentation: "Only changes documentation, docstrings, READMEs, or examples for Phoenix itself.",
+  documentation: "Only changes documentation, docstrings, READMEs, or examples for the project itself.",
   refactor_or_chore: "Internal restructuring, cleanup, tooling, formatting, or CI changes with no intended behavior change.",
   tests_only: "Only adds or changes tests.",
   dependency_update: "Bumps or changes dependencies or lockfiles.",
-  off_topic_or_promotional: "Primarily adds, advertises, or links a third-party product or service, or is unrelated to Phoenix."
+  off_topic_or_promotional: "Primarily adds, advertises, or links a third-party product or service, or is unrelated to the project."
 } as const
 export type PrCategory = keyof typeof PR_CATEGORY
 
@@ -100,9 +105,9 @@ export const RISK_LEVELS = [
 // Questions. All questions in a set are evaluated in parallel over one state.
 // ---------------------------------------------------------------------------
 
-const commonQuestions = {
+const makeCommonQuestions = (context: string) => ({
   component: choice(
-    `Which Phoenix component does this GitHub item primarily concern? ${PHOENIX_CONTEXT} Use the title, body, file paths, and code snippets.`,
+    `Which component of the project does this GitHub item primarily concern? Project: ${context} Use the title, body, file paths, and code snippets.`,
     COMPONENT
   ),
   language: choice(
@@ -110,26 +115,26 @@ const commonQuestions = {
     LANGUAGE
   ),
   in_scope: noul(
-    `Is this item within the scope of the Phoenix project itself? ${PHOENIX_CONTEXT}`,
+    `Is this item within the scope of the project itself? Project: ${context}`,
     {
-      true: "It concerns Phoenix's own server, UI, clients, evals, instrumentation, docs, or deployment.",
-      false: "It is mainly about a third-party product, asks Phoenix to promote or list an external service, or is unrelated to Phoenix."
+      true: "It concerns the project's own code, UI, clients, docs, or deployment.",
+      false: "It is mainly about a third-party product, asks the project to promote or list an external service, or is unrelated to the project."
     }
   ),
   agent_authored: noul(
     "Was this item most likely written by an automated coding agent rather than directly by a human? Signals: 'Generated with Claude Code', 'Co-Authored-By: Claude', uniform machine-like structure, exhaustive file/line citations with no personal context.",
     { true: "Written by an AI coding agent.", false: "Written by a person." }
   )
-}
+})
 
-export const issueQuestions = {
-  ...commonQuestions,
+export const makeIssueQuestions = (context: string) => ({
+  ...makeCommonQuestions(context),
   category: choice(
-    `What is the primary category of this GitHub issue for the Phoenix project? ${PHOENIX_CONTEXT}`,
+    `What is the primary category of this GitHub issue? Project: ${context}`,
     ISSUE_CATEGORY
   ),
   reproducible: noul(
-    "Does the issue give a maintainer enough concrete information to reproduce or verify it: the Phoenix version or commit, how Phoenix is deployed (self-hosted, cloud, notebook), concrete steps or code, and the observed vs expected behavior? For a feature request, treat this as whether the request is specific enough to act on.",
+    "Does the issue give a maintainer enough concrete information to reproduce or verify it: the project version or commit, how it is deployed or installed, concrete steps or code, and the observed vs expected behavior? For a feature request, treat this as whether the request is specific enough to act on.",
     {
       true: "Version/deployment and steps or code are present, or the request is specific and actionable.",
       false: "Key details are missing, so a maintainer would have to ask the author before doing anything."
@@ -140,15 +145,15 @@ export const issueQuestions = {
     SEVERITY_LEVELS
   ),
   value: score(
-    "If this issue is a feature request or documentation request, how valuable would fulfilling it be to Phoenix users in general? If it is not a request, pick the lowest level.",
+    "If this issue is a feature request or documentation request, how valuable would fulfilling it be to the project's users in general? If it is not a request, pick the lowest level.",
     VALUE_LEVELS
   )
-}
+})
 
-export const prQuestions = {
-  ...commonQuestions,
+export const makePrQuestions = (context: string) => ({
+  ...makeCommonQuestions(context),
   category: choice(
-    `What is the primary category of this pull request to the Phoenix project? ${PHOENIX_CONTEXT} Use the title, description, and the list of changed files.`,
+    `What is the primary category of this pull request? Project: ${context} Use the title, description, and the list of changed files.`,
     PR_CATEGORY
   ),
   described: noul(
@@ -162,10 +167,10 @@ export const prQuestions = {
     "How risky is this pull request to review and merge, judging by what it changes (files, size, description)?",
     RISK_LEVELS
   )
-}
+})
 
-export type IssueQuestions = typeof issueQuestions
-export type PrQuestions = typeof prQuestions
+export type IssueQuestions = ReturnType<typeof makeIssueQuestions>
+export type PrQuestions = ReturnType<typeof makePrQuestions>
 
 // ---------------------------------------------------------------------------
 // Thresholds used by src/triage/plan.ts. Tune against real triage outcomes.

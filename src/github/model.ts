@@ -24,6 +24,8 @@ export const PrDetails = Schema.Struct({
   baseRefName: Schema.String,
   files: Schema.Array(ChangedFile),
   reviewCount: Schema.Int,
+  /** Logins of people who have left a review. */
+  reviewers: Schema.Array(Schema.String),
   requestedReviewers: Schema.Array(Schema.String),
   linkedIssues: Schema.Array(Schema.Struct({ number: Schema.Int, title: Schema.String })),
   checks: Schema.NullOr(Schema.String)
@@ -58,6 +60,13 @@ export class TriageItem extends Schema.Class<TriageItem>("TriageItem")({
     return this.kind === "pull_request" ? "PR" : "issue"
   }
 }
+
+export const RepoLabel = Schema.Struct({
+  name: Schema.String,
+  color: Schema.String,
+  description: Schema.NullOr(Schema.String)
+})
+export type RepoLabel = typeof RepoLabel.Type
 
 export interface Repo {
   readonly owner: string

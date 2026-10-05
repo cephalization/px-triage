@@ -19,8 +19,8 @@ import {
   type PrCategory,
   DEFAULT_MODEL,
   STATE_LIMITS,
-  issueQuestions,
-  prQuestions
+  makeIssueQuestions,
+  makePrQuestions
 } from "./questions.js"
 
 export class ClassifyError extends Schema.TaggedError<ClassifyError>()("ClassifyError", {
@@ -65,9 +65,6 @@ export interface Assessment {
   readonly cached?: boolean
 }
 
-/** Changing any question or criterion changes this hash and invalidates the cache. */
-const QUESTIONS_HASH = createHash("sha1").update(JSON.stringify({ issueQuestions, prQuestions })).digest("hex").slice(0, 12)
-
 const DistributionSchema = Schema.Struct({
   choice: Schema.String,
   confidence: Schema.Number,
@@ -95,13 +92,17 @@ export class Classifier extends Context.Service<Classifier, {
   readonly classify: (item: TriageItem) => Effect.Effect<Assessment, ClassifyError>
   readonly model: string
 }>()("px-triage/classify/Classifier") {
-  static readonly layer = (options: { readonly model: string | undefined; readonly cache?: boolean | undefined }) =>
+  static readonly layer = (options: { readonly model: string | undefined; readonly cache?: boolean | undefined; readonly context: string }) =>
     Layer.effect(
       Classifier,
       Effect.gen(function*() {
         const { config } = yield* AppConfig
         const fs = yield* FileSystem.FileSystem
         const useCache = options.cache ?? true
+        const issueQuestions = makeIssueQuestions(options.context)
+        const prQuestions = makePrQuestions(options.context)
+        /** Any change to the questions, criteria, or project description invalidates the cache. */
+        const questionsHash = createHash("sha1").update(JSON.stringify({ issueQuestions, prQuestions })).digest("hex").slice(0, 12)
         const apiKey = config.typesafeApiKey
         const model = options.model ?? config.model ?? DEFAULT_MODEL
         const client = new TypeSafeClient({ apiKey, defaultModel: model, logLevel: "off" })
@@ -160,7 +161,7 @@ export class Classifier extends Context.Service<Classifier, {
         // Disk cache: same item content (updatedAt), model, and question set → same answer.
         const cachePath = (item: TriageItem) => {
           const key = createHash("sha1")
-            .update([item.id, item.updatedAt, model, QUESTIONS_HASH].join("|"))
+            .update([item.id, item.updatedAt, model, questionsHash].join("|"))
             .digest("hex")
             .slice(0, 16)
           return join(CACHE_DIR, `${item.kind}-${item.number}-${key}.json`)

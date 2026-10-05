@@ -13,6 +13,7 @@ import { GitHub } from "../github/GitHub.js"
 import type { Repo, TriageItem } from "../github/model.js"
 import { bold, cyan, dim, gray, green, hr, red, terminalWidth, truncate, yellow } from "../ui/ansi.js"
 import { readDecisions } from "./decisions.js"
+import { RepoProfiles } from "./profile.js"
 import { type ActionKind, type Thresholds, pct, suggestPlan } from "./plan.js"
 
 export const ACTIONS: ReadonlyArray<ActionKind> = ["needs_info", "bug", "feature", "review", "close"]
@@ -45,6 +46,7 @@ export interface TrainOptions {
 export const runTrain = Effect.fn("runTrain")(function*(options: TrainOptions) {
   const github = yield* GitHub
   const classifier = yield* Classifier
+  const profile = yield* (yield* RepoProfiles).load(options.repo)
   const width = terminalWidth()
 
   const t0 = performance.now()
@@ -78,7 +80,7 @@ export const runTrain = Effect.fn("runTrain")(function*(options: TrainOptions) {
     let correct = 0
     const matrix = new Map<string, number>()
     for (const r of ok) {
-      const suggested = suggestPlan(r.item, r.assessment, thresholds).action
+      const suggested = suggestPlan(r.item, r.assessment, profile, thresholds).action
       if (suggested === r.truth) correct++
       matrix.set(`${r.truth}>${suggested}`, (matrix.get(`${r.truth}>${suggested}`) ?? 0) + 1)
     }
@@ -132,7 +134,7 @@ export const runTrain = Effect.fn("runTrain")(function*(options: TrainOptions) {
 
   // Biggest disagreements, most confident first
   const disagreements = ok
-    .map((r) => ({ ...r, suggested: suggestPlan(r.item, r.assessment).action }))
+    .map((r) => ({ ...r, suggested: suggestPlan(r.item, r.assessment, profile).action }))
     .filter((r) => r.suggested !== r.truth)
     .sort((a, b) => b.assessment.category.confidence - a.assessment.category.confidence)
     .slice(0, 15)
@@ -149,7 +151,7 @@ export const runTrain = Effect.fn("runTrain")(function*(options: TrainOptions) {
   // Acceptance from live sessions
   const decisions = yield* readDecisions
   if (decisions.length) {
-    const live = decisions.filter((d) => d.suggested !== null)
+    const live = decisions.filter((d) => d.suggested !== null && d.chosen !== "skip")
     const accepted = live.filter((d) => d.accepted).length
     yield* Console.log(hr(width))
     yield* Console.log(`${bold("Live acceptance:")} ${pctColor(live.length ? accepted / live.length : 0)} ${dim(`of ${live.length} suggestions across ${decisions.length} logged decisions`)}`)
@@ -177,7 +179,7 @@ export const runTrain = Effect.fn("runTrain")(function*(options: TrainOptions) {
             kind: r.item.kind,
             title: r.item.title,
             truth: r.truth,
-            suggested: r.assessment ? suggestPlan(r.item, r.assessment).action : null,
+            suggested: r.assessment ? suggestPlan(r.item, r.assessment, profile).action : null,
             error: r.error,
             assessment: r.assessment
           }))

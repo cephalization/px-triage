@@ -2,7 +2,6 @@ import type { Assessment, Scored } from "../classify/Classifier.js"
 import { RISK_LEVELS, SEVERITY_LEVELS, THRESHOLDS, VALUE_LEVELS } from "../classify/questions.js"
 import type { TriageItem } from "../github/model.js"
 import { ACTION_TITLES, type TriagePlan } from "../triage/plan.js"
-import { LABEL_COLORS } from "../triage/roster.js"
 import { bar, bold, chip, cyan, dim, gray, green, hr, italic, magenta, red, terminalWidth, truncate, wrapText, yellow } from "./ansi.js"
 
 const ago = (iso: string): string => {
@@ -13,7 +12,7 @@ const ago = (iso: string): string => {
   return `${Math.floor(h / 24)}d ago`
 }
 
-export const renderHeader = (item: TriageItem, index: number, total: number): string => {
+export const renderHeader = (item: TriageItem, index: number, total: number, colors: Record<string, string>): string => {
   const width = terminalWidth()
   const kind = item.isPr ? magenta("PR") : cyan("ISSUE")
   const num = bold(`#${item.number}`)
@@ -25,7 +24,7 @@ export const renderHeader = (item: TriageItem, index: number, total: number): st
   const assoc = item.authorAssociation && item.authorAssociation !== "NONE" ? dim(` · ${item.authorAssociation.toLowerCase()}`) : ""
   lines.push(gray(`by ${who}${assoc} · opened ${ago(item.createdAt)} · ${item.commentCount} comments` + (item.reactions ? ` · ${item.reactions} reactions` : "")))
   lines.push(gray(item.url))
-  if (item.labels.length) lines.push(item.labels.map((l) => chip(l, LABEL_COLORS[l])).join(" "))
+  if (item.labels.length) lines.push(item.labels.map((l) => chip(l, colors[l])).join(" "))
   if (item.assignees.length) lines.push(gray(`assigned: ${item.assignees.map((a) => "@" + a).join(" ")}`))
   if (item.pr) {
     const p = item.pr
@@ -82,7 +81,7 @@ const renderScored = (label: string, s: Scored | null, levels: ReadonlyArray<str
   return [`  ${label.padEnd(12)} ${bold(`level ${s.score}`)} ${dim(`(${Math.round(s.confidence * 100)}% conf)`)} ${dim(truncate(desc, terminalWidth() - 40))}`]
 }
 
-export const renderAssessment = (a: Assessment, plan: TriagePlan): string => {
+export const renderAssessment = (a: Assessment, plan: TriagePlan, colors: Record<string, string>): string => {
   const width = terminalWidth()
   const lines: Array<string> = []
   lines.push(hr(width))
@@ -104,7 +103,7 @@ export const renderAssessment = (a: Assessment, plan: TriagePlan): string => {
   const title = plan.uncertain ? yellow(`suggest ${ACTION_TITLES[plan.action]} (uncertain)`) : green(`suggest ${ACTION_TITLES[plan.action]}`)
   lines.push(`  ${bold("→")} ${title}`)
   for (const r of plan.rationale) lines.push(`    ${dim("·")} ${dim(r)}`)
-  const labels = plan.labelsToAdd.map((l) => chip(l, LABEL_COLORS[l])).join(" ")
+  const labels = plan.labelsToAdd.map((l) => chip(l, colors[l])).join(" ")
   if (labels) lines.push(`    ${dim("labels")} ${labels}`)
   if (plan.suggestedAssignees.length) lines.push(`    ${dim("owners")} ${plan.suggestedAssignees.slice(0, 4).map((a, i) => (i === 0 ? bold("@" + a) : dim("@" + a))).join(" ")}`)
   return lines.join("\n")
