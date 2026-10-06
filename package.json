@@ -1,6 +1,6 @@
 {
   "name": "@cephalization/px-triage",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Keyboard-driven GitHub issue and PR triage: TypeSafe Jev suggests the next step, you press Enter. Traces and trains with Arize Phoenix.",
   "keywords": [
     "github",
