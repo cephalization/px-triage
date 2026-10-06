@@ -77,8 +77,8 @@ const topN = (d: { readonly probabilities: Readonly<Record<string, number>> }, n
 
 const renderScored = (label: string, s: Scored | null, levels: ReadonlyArray<string>): Array<string> => {
   if (!s) return []
-  const desc = levels[s.score] ?? ""
-  return [`  ${label.padEnd(12)} ${bold(`level ${s.score}`)} ${dim(`(${Math.round(s.confidence * 100)}% conf)`)} ${dim(truncate(desc, terminalWidth() - 40))}`]
+  const desc = levels[s.level] ?? ""
+  return [`  ${label.padEnd(12)} ${bold(`level ${s.level}`)} ${dim(`(${Math.round(s.confidence * 100)}% conf · ${s.score.toFixed(2)})`)} ${dim(truncate(desc, terminalWidth() - 44))}`]
 }
 
 export const renderAssessment = (a: Assessment, plan: TriagePlan, colors: Record<string, string>): string => {

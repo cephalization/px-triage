@@ -30,7 +30,9 @@ export const Decision = Schema.Struct({
   /** True when the triager assigned themselves (capacity, not ownership). */
   selfAssigned: Schema.optional(Schema.Boolean),
   /** OpenTelemetry span id of the triage.classify span, for Phoenix annotations. */
-  classifySpanId: Schema.optional(Schema.String)
+  classifySpanId: Schema.optional(Schema.String),
+  /** Who decided: a GitHub login for humans in the TUI, or "agent:<name>" for non-interactive use. */
+  actor: Schema.optional(Schema.String)
 })
 export type Decision = typeof Decision.Type
 
@@ -45,6 +47,7 @@ export const makeDecision = (input: {
   dryRun: boolean
   selfAssigned?: boolean
   classifySpanId?: string | undefined
+  actor?: string | undefined
 }): Decision => ({
   ts: new Date().toISOString(),
   repo: input.repo,
@@ -64,7 +67,8 @@ export const makeDecision = (input: {
   assignees: [...input.assignees],
   dryRun: input.dryRun,
   ...(input.selfAssigned !== undefined ? { selfAssigned: input.selfAssigned } : {}),
-  ...(input.classifySpanId !== undefined ? { classifySpanId: input.classifySpanId } : {})
+  ...(input.classifySpanId !== undefined ? { classifySpanId: input.classifySpanId } : {}),
+  ...(input.actor !== undefined ? { actor: input.actor } : {})
 })
 
 export const appendDecision = (decision: Decision) =>

@@ -15,9 +15,13 @@ export interface Template {
   readonly kind?: TriageItem["kind"]
 }
 
-const DOCS_URL = "https://arize.com/docs/phoenix"
-const SLACK_URL = "https://arize-ai.slack.com"
-const CONTRIBUTING_URL = "https://github.com/Arize-ai/phoenix/blob/main/CONTRIBUTING.md"
+/**
+ * Placeholders: {{author}}, {{number}}, {{title}}, plus
+ * {{docs}} → "The docs at <url> cover this area, and the" (or just "The" when the repo has none)
+ * {{community}} → "the community <name> (<url>)" (or "GitHub Discussions on this repository")
+ * {{contributing}} → "See <url> for our contribution guidelines." (or "")
+ * The URLs come from the repo's config (`repos.<owner/name>.links`).
+ */
 
 export const NEEDS_INFO_TEMPLATES: ReadonlyArray<Template> = [
   {
@@ -71,7 +75,7 @@ That helps us figure out the right shape for this.`
 - A short summary of the change and any behavior that changes for users
 - How you verified it (tests added/run, screenshots for UI changes)
 
-See ${CONTRIBUTING_URL} for our contribution guidelines.`
+{{contributing}}`
   }
 ]
 
@@ -83,7 +87,7 @@ export const CLOSE_TEMPLATES: ReadonlyArray<Template> = [
     labels: ["question"],
     body: `Hi @{{author}}, thanks for reaching out! This looks like a usage question rather than a bug or feature request, so I'm going to close it to keep the tracker focused.
 
-The docs at ${DOCS_URL} cover this area, and the fastest way to get help is the community Slack (${SLACK_URL}). If it turns out there's a defect behind this, please open a new issue with reproduction steps and we'll dig in.`
+{{docs}} fastest way to get help is {{community}}. If it turns out there's a defect behind this, please open a new issue with reproduction steps and we'll dig in.`
   },
   {
     id: "out-of-scope",
@@ -143,17 +147,35 @@ We appreciate the effort, and welcome future contributions. Opening an issue fir
   }
 ]
 
+export interface RepoLinks {
+  readonly docsUrl?: string | undefined
+  readonly communityUrl?: string | undefined
+  readonly communityName?: string | undefined
+  readonly contributingUrl?: string | undefined
+}
+
 export interface TemplateContext {
   readonly author: string
   readonly number: number
   readonly title: string
+  readonly links?: RepoLinks | undefined
 }
 
-export const renderTemplate = (template: Template, ctx: TemplateContext): string =>
-  template.body
+export const renderTemplate = (template: Template, ctx: TemplateContext): string => {
+  const l = ctx.links ?? {}
+  const docs = l.docsUrl ? `The docs at ${l.docsUrl} cover this area, and the` : "The"
+  const community = l.communityUrl ? `the community ${l.communityName ?? "chat"} (${l.communityUrl})` : "GitHub Discussions on this repository"
+  const contributing = l.contributingUrl ? `See ${l.contributingUrl} for our contribution guidelines.` : ""
+  return template.body
     .replaceAll("{{author}}", ctx.author)
     .replaceAll("{{number}}", String(ctx.number))
     .replaceAll("{{title}}", ctx.title)
+    .replaceAll("{{docs}}", docs)
+    .replaceAll("{{community}}", community)
+    .replaceAll("{{contributing}}", contributing)
+    .replace(/\n\n\n+/g, "\n\n")
+    .trimEnd()
+}
 
 export const templatesFor = (
   templates: ReadonlyArray<Template>,

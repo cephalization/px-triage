@@ -99,7 +99,7 @@ const suggestPlanWith = (item: TriageItem, a: Assessment, profile: RepoProfile, 
       return { ...base, action: "needs_info", rationale, labelsToAdd: compact([NEEDS_INFO_LABEL, ...metaLabels]) }
     }
     const typeLabel = cat === "bug_fix" ? BUG_LABEL : cat === "feature" ? ENHANCEMENT_LABEL : cat === "documentation" ? DOCS_LABEL : null
-    rationale.push(`PR looks like a ${cat.replaceAll("_", " ")}` + (a.risk ? `, review risk level ${a.risk.score}` : ""))
+    rationale.push(`PR looks like a ${cat.replaceAll("_", " ")}` + (a.risk ? `, review risk level ${a.risk.level}` : ""))
     if (item.pr?.linkedIssues.length) rationale.push(`closes ${item.pr.linkedIssues.map((i) => `#${i.number}`).join(", ")}`)
     return { ...base, action: "review", rationale, labelsToAdd: compact([typeLabel, ...metaLabels]) }
   }
@@ -121,15 +121,15 @@ const suggestPlanWith = (item: TriageItem, a: Assessment, profile: RepoProfile, 
   if (cat === "bug_report") {
     const labels: Array<string | null> = [BUG_LABEL, ...metaLabels]
     if (a.severity && a.severity.confidence >= THRESHOLDS.severityConfidenceFloor) {
-      labels.push(priorityLabel(profile, a.severity.score))
-      rationale.push(`severity level ${a.severity.score} (${pct(a.severity.confidence)} confident)`)
+      labels.push(priorityLabel(profile, a.severity.level))
+      rationale.push(`severity level ${a.severity.level} (${pct(a.severity.confidence)} confident)`)
     }
     rationale.push(`reproducibility ${pct(a.complete)}`)
     return { ...base, action: "bug", rationale, labelsToAdd: compact(labels) }
   }
   // feature_request or documentation
   const labels = [cat === "documentation" ? DOCS_LABEL ?? ENHANCEMENT_LABEL : ENHANCEMENT_LABEL, ...metaLabels]
-  if (a.value) rationale.push(`value level ${a.value.score} (${pct(a.value.confidence)} confident)`)
+  if (a.value) rationale.push(`value level ${a.value.level} (${pct(a.value.confidence)} confident)`)
   return { ...base, action: "feature", rationale, labelsToAdd: compact(labels) }
 }
 

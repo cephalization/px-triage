@@ -64,7 +64,7 @@ const assessment = (over: Partial<Assessment> = {}): Assessment => ({
   inScope: 0.95,
   complete: 0.9,
   agentAuthored: 0.1,
-  severity: { score: 1, confidence: 0.7, probabilities: [0.1, 0.8, 0.1] },
+  severity: { score: 1, level: 1, confidence: 0.7, probabilities: [0.1, 0.8, 0.1] },
   value: null,
   risk: null,
   ...over
@@ -99,7 +99,7 @@ describe("suggestPlan (issues)", () => {
   })
 
   it("routes feature requests to feature with enhancement label", () => {
-    const plan = suggestPlan(item(), assessment({ category: dist("feature_request", 0.8, ["bug_report"]), severity: null, value: { score: 2, confidence: 0.6, probabilities: [0, 0.2, 0.8] } }), profile)
+    const plan = suggestPlan(item(), assessment({ category: dist("feature_request", 0.8, ["bug_report"]), severity: null, value: { score: 1.8, level: 2, confidence: 0.6, probabilities: [0, 0.2, 0.8] } }), profile)
     expect(plan.action).toBe("feature")
     expect(plan.labelsToAdd).toContain("enhancement")
   })
@@ -149,7 +149,7 @@ describe("suggestPlan (pull requests)", () => {
   })
 
   it("routes a described bug fix to review with codeowner teams", () => {
-    const plan = suggestPlan(pr, assessment({ kind: "pull_request", category: dist("bug_fix", 0.9, ["feature"]), severity: null, risk: { score: 0, confidence: 0.8, probabilities: [0.9, 0.1, 0] } }), profile)
+    const plan = suggestPlan(pr, assessment({ kind: "pull_request", category: dist("bug_fix", 0.9, ["feature"]), severity: null, risk: { score: 0.1, level: 0, confidence: 0.8, probabilities: [0.9, 0.1, 0] } }), profile)
     expect(plan.action).toBe("review")
     expect(plan.labelsToAdd).toContain("bug")
     expect(plan.suggestedReviewers.teams).toEqual(["oss-javascript"])
@@ -199,5 +199,14 @@ describe("learned settings", () => {
       learned: { updatedAt: "2026-10-05T00:00:00Z", sampleSize: 40, thresholds: {}, policy: {}, owners: { ui: ["server-owner"] } }
     }
     expect(suggestPlan(item(), assessment(), learnedProfile).suggestedAssignees[0]).toBe("server-owner")
+  })
+})
+
+describe("score levels", () => {
+  it("routes priority by the most likely level, not the weighted score", () => {
+    // TypeSafe returns score 0.41 for probabilities [0.67, 0.25, 0.08]; the level is 0.
+    const plan = suggestPlan(item(), assessment({ severity: { score: 0.41, level: 0, confidence: 0.39, probabilities: [0.67, 0.25, 0.08] } }), profile)
+    expect(plan.labelsToAdd).toContain("priority: low")
+    expect(plan.rationale.join(" ")).toContain("severity level 0")
   })
 })
