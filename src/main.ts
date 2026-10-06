@@ -2,6 +2,7 @@ import { NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node
 import { Console, Effect, Layer, Option } from "effect"
 import { HttpClient } from "effect/http"
 import { Command, Flag } from "effect/cli"
+import { runAutomate } from "./automate/automate.ts"
 import { Classifier } from "./classify/Classifier.ts"
 import { AppConfig, CONFIG_FILE, runOnboarding, writeConfig } from "./config/AppConfig.ts"
 import { GitHub } from "./github/GitHub.ts"
@@ -150,6 +151,23 @@ const roster = Command.make(
   })
 ).pipe(Command.withDescription("Show the generated repo profile (owners, reviewers, label mapping); --refresh regenerates it"))
 
+const automate = Command.make(
+  "automate",
+  {
+    label: Flag.String("label").pipe(Flag.withDescription("Queue label the workflow should apply (default: triage)"), Flag.optional),
+    yes: Flag.Boolean("yes").pipe(Flag.withAlias("y"), Flag.withDescription("Accept the defaults, commit on a branch, and open a PR without asking"), Flag.withDefault(false))
+  },
+  Effect.fn(function*(input) {
+    yield* runAutomate({ label: input.label, yes: input.yes }).pipe(handleErrors)
+  })
+).pipe(
+  Command.withDescription("Write a GitHub Actions workflow into the current repo that labels new issues and PRs for triage; optionally commit it on a branch and open a PR"),
+  Command.withExamples([
+    { command: "cd your/repo && px-triage automate", description: "Answer a few questions, write .github/workflows/triage-label.yml, open a PR" },
+    { command: "px-triage automate --yes", description: "Defaults: issues + PRs, skip changesets and bots, open a PR" }
+  ])
+)
+
 const init = Command.make(
   "init",
   {},
@@ -162,7 +180,7 @@ const init = Command.make(
 ).pipe(Command.withDescription("Run the first-time setup again (TypeSafe key, Phoenix tracing)"))
 
 const root = triage.pipe(
-  Command.withSubcommands([train, roster, init]),
+  Command.withSubcommands([train, roster, automate, init]),
   // AppConfig is needed by every subcommand; onboarding runs here on first use.
   Command.provide(AppConfig.layer)
 )

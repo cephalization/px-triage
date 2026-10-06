@@ -25,10 +25,11 @@ via `GITHUB_TOKEN` or a logged-in `gh`. The repository defaults to the git
 
 **The queue is a label.** px-triage works on issues and PRs that carry a
 `triage` label, and removes it as each one is handled. Your repository needs
-to apply that label to new items, either by hand or through automation such
-as an issue-form `labels:` field or a `actions/labeler` / `issues: opened`
-workflow. A different label name can be set with `--label` or per repo in the
-config.
+to apply that label to new items. `pxt automate`, run inside a checkout,
+asks a few questions and writes `.github/workflows/triage-label.yml` to do it
+(issues and PRs, skipping bots and the changesets release PR by default), then
+offers to commit it on a branch and open a PR. A different label name can be
+set with `--label` or per repo in the config.
 
 Built with Effect 4 (`effect/cli`, `effect/http`) and the `@typesafe-ai/sdk`.
 
@@ -157,6 +158,7 @@ on first use. Environment overrides: `TYPESAFE_API_KEY`, `PX_TRIAGE_MODEL`,
 pxt                          # walk the queue
 pxt --only prs --dry-run     # preview PR triage, change nothing
 pxt --number 1234            # one item
+pxt automate                 # write a workflow that labels new issues/PRs for triage; opens a PR
 pxt roster                   # show the repo profile; --refresh regenerates it
 pxt train                    # Phoenix dataset + experiment; report agreement and what was learned
 pxt train --apply            # also write learned thresholds / policy / owners into the profile
