@@ -94,6 +94,12 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
   let numbers: Array<number> = [...initialNumbers]
   if (numbers.length === 0) {
     yield* Console.log(green(`Nothing labeled "${options.label}" in ${slug}. Inbox zero.`))
+    const labelExists = profile.labels.some((l) => l.name.toLowerCase() === options.label.toLowerCase())
+    yield* Console.log(
+      labelExists
+        ? dim(`New issues and PRs need the "${options.label}" label to show up here. If nothing applies it automatically yet, run \`pxt automate\` in a checkout of ${slug}.`)
+        : yellow(`This repository has no "${options.label}" label, so nothing can enter the queue. Run \`pxt automate\` in a checkout of ${slug} to create it and label new issues and PRs automatically.`)
+    )
     return
   }
   yield* Console.log(dim(`  details + ${classifier.model} classification stream in the background${options.dryRun ? ` · ${yellow("DRY RUN")}` : ""}`))
