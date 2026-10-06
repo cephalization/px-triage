@@ -20,8 +20,9 @@ cd your/repo && pxt                        # first run asks for a TypeSafe key (
 
 Or without installing: `npx @cephalization/px-triage --help`. You need Node
 22.12+, a [TypeSafe API key](https://console.typesafe.ai/keys), and GitHub auth
-via `GITHUB_TOKEN` or a logged-in `gh`. The repository defaults to the git
-`origin` of your current directory.
+via `GITHUB_TOKEN` or a logged-in `gh`. The repository is the git `origin` of
+your current directory; outside a checkout it falls back to the one saved in
+your config, and `--repo owner/name` always wins.
 
 **The queue is a label.** px-triage works on issues and PRs that carry a
 `triage` label, and removes it as each one is handled. Your repository needs

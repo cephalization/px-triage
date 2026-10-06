@@ -20,7 +20,7 @@ import { dim, red } from "./ui/ansi.ts"
 
 const repoFlag = Flag.String("repo").pipe(
   Flag.withAlias("r"),
-  Flag.withDescription("GitHub repository as owner/name (default: config, else this directory's git origin, else arize-ai/phoenix)"),
+  Flag.withDescription("GitHub repository as owner/name (default: this directory's git origin, else the configured default, else arize-ai/phoenix)"),
   Flag.optional
 )
 const limitFlag = Flag.Int("limit").pipe(Flag.withAlias("n"), Flag.withDescription("Maximum number of items to load"), Flag.withDefault(50))
@@ -51,7 +51,7 @@ const appLayer = (repo: Repo, input: { readonly model: Option.Option<string>; re
   )
 
 const resolveRepo = (flag: Option.Option<string>) =>
-  // --repo flag, else config, else the git origin of the current directory, else arize-ai/phoenix.
+  // --repo flag, else the git origin of the current directory, else config, else arize-ai/phoenix.
   Effect.map(AppConfig, ({ config }) => parseRepo(Option.getOrElse(flag, () => defaultRepo(config.repo))))
 
 const labelFlag = Flag.String("label").pipe(Flag.withDescription("Queue label (default from config, else triage)"), Flag.optional)

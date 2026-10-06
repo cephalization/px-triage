@@ -135,7 +135,9 @@ export const runOnboarding = Effect.gen(function*() {
 
   const detected = detectRepoFromCwd()
   const repo = yield* Prompt.String({
-    message: detected ? `Default repository (owner/name) · detected from this checkout's origin` : "Default repository (owner/name)",
+    message: detected
+      ? `Fallback repository (owner/name) for directories that aren't a GitHub checkout · detected from this checkout's origin`
+      : "Fallback repository (owner/name) for directories that aren't a GitHub checkout",
     default: detected ?? FALLBACK_REPO
   })
   const isPhoenix = repo.trim().toLowerCase() === "arize-ai/phoenix"

@@ -1,7 +1,8 @@
 /**
- * Work out which repository to triage when none is given: the `origin` remote
- * of the git checkout in the current directory, else the configured default,
- * else arize-ai/phoenix.
+ * Work out which repository to triage when none is given on the command line:
+ * the `origin` remote of the git checkout in the current directory first, then
+ * the configured default (for directories that are not a GitHub checkout),
+ * then arize-ai/phoenix.
  */
 import { spawnSync } from "node:child_process"
 
@@ -19,4 +20,4 @@ export const detectRepoFromCwd = (cwd: string = process.cwd()): string | null =>
   return parseGitHubRemote(res.stdout)
 }
 
-export const defaultRepo = (configured: string | undefined): string => configured ?? detectRepoFromCwd() ?? FALLBACK_REPO
+export const defaultRepo = (configured: string | undefined): string => detectRepoFromCwd() ?? configured ?? FALLBACK_REPO
