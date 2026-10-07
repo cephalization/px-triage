@@ -143,7 +143,8 @@ export const runTrain = Effect.fnUntraced(function*(options: TrainOptions) {
   const experimentName = `${classifier.model} · q${classifier.questionsHash} · ${new Date().toISOString().slice(0, 16)}`
   const client = phoenix.client
 
-  const task = (example: Example) =>
+  // Named so Phoenix shows "Task: triageWithCurrentQuestions" instead of "Task: task".
+  const triageWithCurrentQuestions = (example: Example) =>
     Effect.runPromise(
       Effect.gen(function*() {
         const raw = example.input["item"]
@@ -204,7 +205,7 @@ export const runTrain = Effect.fnUntraced(function*(options: TrainOptions) {
         experimentName,
         experimentDescription: "px-triage train: current questions + planner vs. human / inferred outcomes",
         experimentMetadata: { model: classifier.model, questionsHash: classifier.questionsHash, thresholds: { ...THRESHOLDS, ...(profile.learned?.thresholds ?? {}) }, repo: slug },
-        task,
+        task: triageWithCurrentQuestions,
         evaluators: [actionMatch, ownerMatch],
         concurrency: options.concurrency,
         setGlobalTracerProvider: false,

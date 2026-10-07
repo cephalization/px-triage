@@ -1,5 +1,23 @@
 # @cephalization/px-triage
 
+## 0.2.0
+
+### Minor Changes
+
+- [`d95c538`](https://github.com/cephalization/px-triage/commit/d95c5388f683d17bb71701234a9879185e6ea92e) Thanks [@cephalization](https://github.com/cephalization)! - New `pxt automate` command: asks how new issues and PRs should enter the
+  triage queue, writes `.github/workflows/triage-label.yml` into the current
+  repository (skipping bots and the changesets release PR by default), and
+  optionally commits it on a branch and opens a pull request.
+
+### Patch Changes
+
+- [`2aac4e9`](https://github.com/cephalization/px-triage/commit/2aac4e9563c0a841b47309db6557f16990e01543) Thanks [@cephalization](https://github.com/cephalization)! - When the queue is empty, hint at `pxt automate`, and warn when the repository
+  has no queue label at all.
+
+- [`b12ccf8`](https://github.com/cephalization/px-triage/commit/b12ccf8ebf60c14ca8809231d9f27b02b91daa52) Thanks [@cephalization](https://github.com/cephalization)! - The current directory's git `origin` now takes precedence over the repository
+  saved in the config, so running `pxt` inside another checkout triages that
+  repository. The config value is only a fallback outside a GitHub checkout.
+
 ## 0.1.2
 
 ### Patch Changes

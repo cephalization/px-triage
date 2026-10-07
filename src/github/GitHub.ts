@@ -81,6 +81,14 @@ export class GitHub extends Context.Service<GitHub, {
       const fail = (message: string) => (cause: unknown) => new GitHubError({ message, cause })
       /** Mutations show up in Phoenix as TOOL spans under the apply span. */
       const tool = (name: string) => Effect.fn(name, { attributes: { [SemanticConventions.OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.TOOL } })
+      /** Record what a tool call was asked to do and what came back. */
+      const toolIO = (input: Record<string, unknown>, output: unknown) =>
+        Effect.annotateCurrentSpan({
+          [SemanticConventions.INPUT_VALUE]: JSON.stringify(input),
+          [SemanticConventions.INPUT_MIME_TYPE]: "application/json",
+          [SemanticConventions.OUTPUT_VALUE]: typeof output === "string" ? output : JSON.stringify(output),
+          [SemanticConventions.OUTPUT_MIME_TYPE]: typeof output === "string" ? "text/plain" : "application/json"
+        })
 
       const graphql = Effect.fnUntraced(function*<S extends Schema.Top>(
         schema: S,
@@ -255,20 +263,25 @@ export class GitHub extends Context.Service<GitHub, {
       const issuePath = (repo: Repo, number: number) => `/repos/${repo.owner}/${repo.name}/issues/${number}`
 
       const addLabels = tool("GitHub.addLabels")(function*(repo: Repo, number: number, labels: ReadonlyArray<string>) {
-        if (labels.length === 0) return
+        if (labels.length === 0) {
+          yield* toolIO({ repo: repoSlug(repo), number, labels }, "no labels to add")
+          return
+        }
         yield* HttpClientRequest.post(`${issuePath(repo, number)}/labels`).pipe(
           HttpClientRequest.bodyJsonUnsafe({ labels }),
           client.execute,
           Effect.mapError(fail(`Failed to add labels ${labels.join(", ")}`))
         )
+        yield* toolIO({ repo: repoSlug(repo), number, labels }, `added ${labels.join(", ")}`)
       })
 
       const removeLabel = tool("GitHub.removeLabel")(function*(repo: Repo, number: number, label: string) {
         // 404 means the label was already gone, which is fine.
-        yield* base.del(`${issuePath(repo, number)}/labels/${encodeURIComponent(label)}`).pipe(
+        const res = yield* base.del(`${issuePath(repo, number)}/labels/${encodeURIComponent(label)}`).pipe(
           Effect.flatMap(HttpClientResponse.filterStatus((s) => (s >= 200 && s < 300) || s === 404)),
           Effect.mapError(fail(`Failed to remove label ${label}`))
         )
+        yield* toolIO({ repo: repoSlug(repo), number, label }, res.status === 404 ? "label was not present" : `removed ${label}`)
       })
 
       const comment = tool("GitHub.comment")(function*(repo: Repo, number: number, body: string) {
@@ -278,16 +291,21 @@ export class GitHub extends Context.Service<GitHub, {
           Effect.flatMap(HttpClientResponse.schemaBodyJson(Schema.Struct({ html_url: Schema.String }))),
           Effect.mapError(fail("Failed to post comment"))
         )
+        yield* toolIO({ repo: repoSlug(repo), number, body }, res.html_url)
         return res.html_url
       })
 
       const assign = tool("GitHub.assign")(function*(repo: Repo, number: number, assignees: ReadonlyArray<string>) {
-        if (assignees.length === 0) return
+        if (assignees.length === 0) {
+          yield* toolIO({ repo: repoSlug(repo), number, assignees }, "nobody to assign")
+          return
+        }
         yield* HttpClientRequest.post(`${issuePath(repo, number)}/assignees`).pipe(
           HttpClientRequest.bodyJsonUnsafe({ assignees }),
           client.execute,
           Effect.mapError(fail(`Failed to assign ${assignees.join(", ")}`))
         )
+        yield* toolIO({ repo: repoSlug(repo), number, assignees }, `assigned ${assignees.map((a) => "@" + a).join(" ")}`)
       })
 
       const close = tool("GitHub.close")(function*(repo: Repo, number: number, reason: "completed" | "not_planned") {
@@ -296,6 +314,7 @@ export class GitHub extends Context.Service<GitHub, {
           client.execute,
           Effect.mapError(fail("Failed to close issue"))
         )
+        yield* toolIO({ repo: repoSlug(repo), number, reason }, `closed as ${reason}`)
       })
 
       const closePullRequest = tool("GitHub.closePullRequest")(function*(repo: Repo, number: number) {
@@ -304,6 +323,7 @@ export class GitHub extends Context.Service<GitHub, {
           client.execute,
           Effect.mapError(fail("Failed to close pull request"))
         )
+        yield* toolIO({ repo: repoSlug(repo), number }, "closed")
       })
 
       const requestReviewers = tool("GitHub.requestReviewers")(function*(
@@ -312,12 +332,16 @@ export class GitHub extends Context.Service<GitHub, {
         users: ReadonlyArray<string>,
         teams: ReadonlyArray<string>
       ) {
-        if (users.length === 0 && teams.length === 0) return
+        if (users.length === 0 && teams.length === 0) {
+          yield* toolIO({ repo: repoSlug(repo), number, users, teams }, "no reviewers to request")
+          return
+        }
         yield* HttpClientRequest.post(`/repos/${repo.owner}/${repo.name}/pulls/${number}/requested_reviewers`).pipe(
           HttpClientRequest.bodyJsonUnsafe({ reviewers: users, team_reviewers: teams }),
           client.execute,
           Effect.mapError(fail(`Failed to request reviewers ${[...users, ...teams].join(", ")}`))
         )
+        yield* toolIO({ repo: repoSlug(repo), number, users, teams }, `requested ${[...users.map((u) => "@" + u), ...teams.map((t) => "team " + t)].join(", ")}`)
       })
 
       return GitHub.of({
