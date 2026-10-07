@@ -5,11 +5,11 @@
  * you reach an item its assessment is almost always already there.
  */
 import { OtelTracer } from "@effect/opentelemetry"
+import { context as otelContext, type Span as OtelSpan, trace as otelTrace } from "@opentelemetry/api"
 import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { Context, Effect, FileSystem, Layer, Schema } from "effect"
 import { AppConfig, CACHE_DIR } from "../config/AppConfig.ts"
-import { traceSystemOne } from "../tracing.ts"
 import { TypeSafeClient } from "@typesafe-ai/sdk"
 import type { TriageItem } from "../github/model.ts"
 import {
@@ -112,16 +112,16 @@ export class Classifier extends Context.Service<Classifier, {
         const client = new TypeSafeClient({ apiKey, defaultModel: model, logLevel: "off" })
 
         // Untraced on purpose: the caller owns the span (see session.ts), and
-        // traceSystemOne adds the DECISION child under it.
+        // the OpenInference instrumentation adds the DECISION child under it.
         const classifyUncached = Effect.fnUntraced(function*(item: TriageItem) {
           const state = toState(item)
           const started = performance.now()
-          // Hand the current Effect span to the OpenInference instrumentation so
-          // its DECISION span becomes a child of this classify span.
+          // Run the SDK call inside the current Effect span's OTel context so the
+          // OpenInference instrumentation's DECISION span nests under it.
           const otelSpan = (yield* OtelTracer.currentOtelSpan.pipe(Effect.option)).pipe((o) => (o._tag === "Some" ? o.value : undefined))
           if (item.kind === "pull_request") {
             const result = yield* Effect.tryPromise({
-              try: (signal) => traceSystemOne(client, { state, questions: prQuestions }, { signal }, otelSpan),
+              try: (signal) => inSpanContext(otelSpan, () => client.systemOne({ state, questions: prQuestions }, { signal })),
               catch: (cause) => new ClassifyError({ message: `TypeSafe request failed for #${item.number}: ${cause instanceof Error ? cause.message : String(cause)}`, cause })
             })
             const a = result.answers
@@ -142,7 +142,7 @@ export class Classifier extends Context.Service<Classifier, {
             } satisfies Assessment
           }
           const result = yield* Effect.tryPromise({
-            try: (signal) => traceSystemOne(client, { state, questions: issueQuestions }, { signal }, otelSpan),
+            try: (signal) => inSpanContext(otelSpan, () => client.systemOne({ state, questions: issueQuestions }, { signal })),
             catch: (cause) => new ClassifyError({ message: `TypeSafe request failed for #${item.number}: ${cause instanceof Error ? cause.message : String(cause)}`, cause })
           })
           const a = result.answers
@@ -222,6 +222,10 @@ const toScored = (r: {
 export const argmax = (xs: ReadonlyArray<number>): number => xs.reduce((best, x, i) => (x > (xs[best] ?? -Infinity) ? i : best), 0)
 
 const clip = (s: string, max: number) => (s.length <= max ? s : s.slice(0, max) + `\n…[truncated ${s.length - max} chars]`)
+
+/** Run `f` with `span` (if any) as the active OpenTelemetry context. */
+const inSpanContext = <A>(span: OtelSpan | undefined, f: () => A): A =>
+  span ? otelContext.with(otelTrace.setSpan(otelContext.active(), span), f) : f()
 
 /** "owner/name" from a GitHub issue or PR URL. */
 export const repoFromUrl = (url: string): string => {

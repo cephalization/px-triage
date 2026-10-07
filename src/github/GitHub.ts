@@ -33,8 +33,8 @@ export class GitHub extends Context.Service<GitHub, {
   /** Full details for a batch of numbers in one GraphQL request (≤ 10 recommended). */
   readonly fetchItems: (repo: Repo, numbers: ReadonlyArray<number>) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
   readonly fetchItem: (repo: Repo, number: number) => Effect.Effect<TriageItem, GitHubError>
-  /** Arbitrary GitHub issue/PR search (same fields as the queue). */
-  readonly search: (query: string, limit: number) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
+  /** Arbitrary GitHub issue/PR search (same fields as the queue). Smaller pages avoid GraphQL 502s on PR-heavy results. */
+  readonly search: (query: string, limit: number, pageSize?: number) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
   /** Live labels on one issue/PR (REST, not the lagging search index). */
   readonly fetchLabels: (repo: Repo, number: number) => Effect.Effect<ReadonlyArray<string>, GitHubError>
   /** Repository metadata used to seed the per-repo description. */
@@ -43,6 +43,8 @@ export class GitHub extends Context.Service<GitHub, {
   readonly listLabels: (repo: Repo) => Effect.Effect<ReadonlyArray<RepoLabel>, GitHubError>
   /** Raw CODEOWNERS content, if the repo has one. */
   readonly fetchCodeowners: (repo: Repo) => Effect.Effect<string | null, GitHubError>
+  /** Open items for the team queue: all open PRs plus open issues that are unassigned or assigned to `me`. */
+  readonly fetchTeamItems: (repo: Repo, me: string, limit: number) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
   /** Items that already left the triage queue (for training / calibration). */
   readonly fetchHistory: (options: { readonly repo: Repo; readonly label: string; readonly limit: number }) => Effect.Effect<ReadonlyArray<TriageItem>, GitHubError>
   readonly addLabels: (repo: Repo, number: number, labels: ReadonlyArray<string>) => Effect.Effect<void, GitHubError>
@@ -128,11 +130,11 @@ export class GitHub extends Context.Service<GitHub, {
         return items
       })
 
-      const search = Effect.fnUntraced(function*(q: string, limit: number) {
+      const search = Effect.fnUntraced(function*(q: string, limit: number, pageSize = 50) {
         const items: Array<TriageItem> = []
         let after: string | null = null
         while (items.length < limit) {
-          const first = Math.min(50, limit - items.length)
+          const first = Math.min(pageSize, limit - items.length)
           const data: typeof SearchData.Type = yield* graphql(SearchData, SEARCH_QUERY, { q, first, after })
           for (const node of data.search.nodes) {
             const item = toItem(node)
@@ -193,6 +195,21 @@ export class GitHub extends Context.Service<GitHub, {
           return Buffer.from(body.content.replace(/\n/g, ""), "base64").toString("utf8")
         }
         return null
+      })
+
+      const fetchTeamItems = Effect.fnUntraced(function*(repo: Repo, me: string, limit: number) {
+        const slug = repoSlug(repo)
+        const [prs, mine, unassigned] = yield* Effect.all(
+          [
+            // PR pages carry files + reviews; 50 at a time makes GitHub's GraphQL time out (502).
+            search(`repo:${slug} is:pr is:open sort:updated-desc`, limit, 20),
+            search(`repo:${slug} is:issue is:open assignee:${me} sort:updated-desc`, limit),
+            search(`repo:${slug} is:issue is:open no:assignee sort:updated-desc`, limit)
+          ],
+          { concurrency: 3 }
+        )
+        const seen = new Set<number>()
+        return [...prs, ...mine, ...unassigned].filter((i) => (seen.has(i.number) ? false : (seen.add(i.number), true)))
       })
 
       const fetchHistory = Effect.fnUntraced(function*(options: { readonly repo: Repo; readonly label: string; readonly limit: number }) {
@@ -354,6 +371,7 @@ export class GitHub extends Context.Service<GitHub, {
         fetchTriageQueue,
         fetchQueueNumbers,
         fetchItems,
+        fetchTeamItems,
         fetchHistory,
         fetchItem,
         addLabels,
@@ -464,7 +482,9 @@ const PrNode = Schema.Struct({
   labels: Named,
   assignees: Logins,
   comments: Comments,
-  reviews: Schema.Struct({ totalCount: Schema.Int, nodes: Schema.Array(Schema.Struct({ author: Actor })) }),
+  reviews: Schema.Struct({ totalCount: Schema.Int, nodes: Schema.Array(Schema.Struct({ author: Actor, state: Schema.String, submittedAt: Schema.NullOr(Schema.String) })) }),
+  reviewDecision: Schema.NullOr(Schema.String),
+  mergeStateStatus: Schema.optional(Schema.NullOr(Schema.String)),
   reviewRequests: Schema.Struct({
     nodes: Schema.Array(
       Schema.Struct({
@@ -549,7 +569,8 @@ const PR_FRAGMENT = `
     labels(first: 30) { nodes { name } }
     assignees(first: 10) { nodes { login } }
     comments(first: 5) { totalCount nodes { author { login } body createdAt } }
-    reviews(first: 20) { totalCount nodes { author { login } } }
+    reviews(last: 20) { totalCount nodes { author { login } state submittedAt } }
+    reviewDecision mergeStateStatus
     reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } }
     files(first: 60) { nodes { path additions deletions } }
     closingIssuesReferences(first: 10) { nodes { number title state createdAt authorAssociation author { login } labels(first: 20) { nodes { name } } } }
@@ -571,6 +592,17 @@ query($owner: String!, $name: String!, $number: Int!) {
     issueOrPullRequest(number: $number) { ${ISSUE_FRAGMENT} ${PR_FRAGMENT} }
   }
 }`
+
+/** Newest review per reviewer (ignoring plain comments), newest first. */
+const latestReviewPerAuthor = (nodes: ReadonlyArray<{ author: { login: string } | null; state: string; submittedAt: string | null }>) => {
+  const by = new Map<string, { author: string; state: string; submittedAt: string }>()
+  for (const r of nodes) {
+    if (!r.author || r.state === "COMMENTED" || r.state === "PENDING" || !r.submittedAt) continue
+    const prev = by.get(r.author.login)
+    if (!prev || r.submittedAt > prev.submittedAt) by.set(r.author.login, { author: r.author.login, state: r.state, submittedAt: r.submittedAt })
+  }
+  return [...by.values()].sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))
+}
 
 const toLinks = (kind: TriageItem["kind"], nodes: ReadonlyArray<typeof LinkNode.Type>) =>
   nodes
@@ -646,6 +678,9 @@ const toItem = (node: typeof SearchNode.Type): TriageItem | null => {
         files: n.files?.nodes ?? [],
         reviewCount: n.reviews.totalCount,
         reviewers: [...new Set(n.reviews.nodes.flatMap((r) => (r.author ? [r.author.login] : [])))],
+        reviews: latestReviewPerAuthor(n.reviews.nodes),
+        reviewDecision: n.reviewDecision,
+        mergeStateStatus: n.mergeStateStatus ?? null,
         requestedReviewers: n.reviewRequests.nodes.flatMap((r) => {
           const who = r.requestedReviewer?.login ?? (r.requestedReviewer?.slug ? `team:${r.requestedReviewer.slug}` : null)
           return who ? [who] : []

@@ -63,7 +63,11 @@ export const PRIORITY_LABEL_ALIASES: ReadonlyArray<ReadonlyArray<string>> = [
 
 export const TRIAGE_LABEL = "triage"
 
-const BOT_PATTERNS = [/\[bot\]$/i, /^dependabot/i, /^renovate/i, /^github-actions/i, /^copilot/i, /^claude$/i, /^codecov/i, /^ghost$/i]
+const BOT_PATTERNS = [
+  /\[bot\]$/i, /^dependabot/i, /^renovate/i, /^github-actions/i, /^copilot/i, /^claude$/i, /^codecov/i, /^ghost$/i,
+  // Preview / CI apps that comment on every PR
+  /^mintlify/i, /^vercel/i, /^netlify/i, /^sonarcloud/i, /^changeset-bot/i, /^linear/i, /^cla-?bot/i, /^codspeed/i, /^coderabbit/i
+]
 export const isBot = (login: string): boolean => BOT_PATTERNS.some((re) => re.test(login))
 
 /** First repo label matching any alias (case-insensitive), else the first alias as a best guess, else null. */

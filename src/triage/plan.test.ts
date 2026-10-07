@@ -142,6 +142,9 @@ describe("suggestPlan (pull requests)", () => {
       files: [{ path: "js/app/src/x.tsx", additions: 10, deletions: 2 }],
       reviewCount: 0,
       reviewers: [],
+      reviews: [],
+      reviewDecision: null,
+      mergeStateStatus: null,
       requestedReviewers: [],
       linkedIssues: [{ number: 7, title: "x" }],
       checks: "SUCCESS"

@@ -85,7 +85,7 @@ describe("propagate (PR → issues)", () => {
     author: "someone", authorName: null, authorAssociation: "NONE", labels: ["triage"], assignees: [], commentCount: 0, comments: [], reactions: 0,
     state: "OPEN", stateReason: null,
     linked: [link({ kind: "issue", number: 10 }), link({ kind: "issue", number: 11, createdAt: "2026-10-02T00:00:00Z" })],
-    pr: { isDraft: false, merged: false, additions: 1, deletions: 1, changedFiles: 1, headRefName: "h", baseRefName: "main", files: [], reviewCount: 0, reviewers: [], requestedReviewers: [], linkedIssues: [], checks: null }
+    pr: { isDraft: false, merged: false, additions: 1, deletions: 1, changedFiles: 1, headRefName: "h", baseRefName: "main", files: [], reviewCount: 0, reviewers: [], reviews: [], reviewDecision: null, mergeStateStatus: null, requestedReviewers: [], linkedIssues: [], checks: null }
   })
 
   it("mirrors a review onto the first issue and closes the second as duplicate", () => {
