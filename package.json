@@ -66,6 +66,7 @@
   },
   "dependencies": {
     "@arizeai/openinference-core": "^2.8.0",
+    "@arizeai/openinference-instrumentation-typesafe": "0.4.3",
     "@arizeai/openinference-semantic-conventions": "^2.14.0",
     "@arizeai/phoenix-client": "^7.16.0",
     "@effect/opentelemetry": "4.0.1",
