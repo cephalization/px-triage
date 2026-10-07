@@ -134,8 +134,9 @@ days ago (default 14) are left out:
 Keys: `Enter` opens in the browser, `t` takes it (request your review, or
 assign yourself), `n` posts a short nudge to whoever it is waiting on, `d`
 marks it done until it changes on GitHub, `s` skips, `v` pages the markdown.
-`--json` returns the same list for agents; `--everyone` includes
-non-teammates.
+`--mine` narrows to your plate (review requests to you and your
+assignments); `--everyone` includes non-teammates; `--json` returns the same
+list for agents.
 
 ## For agents
 

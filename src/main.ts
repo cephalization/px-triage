@@ -273,6 +273,7 @@ const team = Command.make(
     only: onlyFlag,
     limit: Flag.Int("limit").pipe(Flag.withAlias("n"), Flag.withDescription("Open items to scan per search"), Flag.withDefault(100)),
     everyone: Flag.Boolean("everyone").pipe(Flag.withDescription("Include items from non-teammates too"), Flag.withDefault(false)),
+    mine: Flag.Boolean("mine").pipe(Flag.withDescription("Only your plate: review requests to you and items assigned to you"), Flag.withDefault(false)),
     window: Flag.Int("window").pipe(Flag.withDescription("Days of activity for unowned issues to count (default 14)"), Flag.withDefault(14)),
     includeSnoozed: Flag.Boolean("include-snoozed").pipe(Flag.withDescription("Show items you marked done even if unchanged"), Flag.withDefault(false)),
     json: jsonFlag,
@@ -283,7 +284,7 @@ const team = Command.make(
     if (!input.json) yield* Console.log(banner() + dim(" · team"))
     const repo = yield* resolveRepo(input.repo)
     const queueLabel = yield* resolveLabel(repo, input.label)
-    yield* runTeam({ repo, queueLabel, limit: input.limit, only: input.only, everyone: input.everyone, windowDays: input.window, includeSnoozed: input.includeSnoozed, json: input.json, dryRun: input.dryRun }).pipe(
+    yield* runTeam({ repo, queueLabel, limit: input.limit, only: input.only, everyone: input.everyone, mine: input.mine, windowDays: input.window, includeSnoozed: input.includeSnoozed, json: input.json, dryRun: input.dryRun }).pipe(
       Effect.provide(appLayer(repo, { model: Option.none(), dryRun: input.dryRun, noTrace: input.noTrace, noCache: false })),
       handleErrors
     )
@@ -292,6 +293,7 @@ const team = Command.make(
   Command.withDescription("What should I work on or unblock next, from my team: review requests, re-reviews, approved-but-unmerged, failing CI, unowned issues"),
   Command.withExamples([
     { command: "px-triage team", description: "Walk the team queue; Enter opens in the browser" },
+    { command: "px-triage team --mine", description: "Just your plate: review requests to you and your assignments" },
     { command: "px-triage team --only prs --json", description: "Machine-readable list of teammate PRs needing attention" }
   ])
 )

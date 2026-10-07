@@ -27,6 +27,8 @@ export interface TeamOptions {
   readonly limit: number
   readonly only: "all" | "issues" | "prs"
   readonly everyone: boolean
+  /** Only what is on your plate: review requests to you and items assigned to you. */
+  readonly mine: boolean
   readonly windowDays: number
   readonly includeSnoozed: boolean
   readonly json: boolean
@@ -46,6 +48,7 @@ export const loadTeamQueue = Effect.fnUntraced(function*(options: TeamOptions) {
   const snoozes = yield* readSnoozes
   let queue = bucketTeamItems(items, profile, { me, queueLabel: options.queueLabel, everyone: options.everyone, windowDays: options.windowDays })
   if (options.only !== "all") queue = queue.filter((t) => (options.only === "prs") === (t.item.kind === "pull_request"))
+  if (options.mine) queue = queue.filter((t) => t.bucket === "review_requested" || t.bucket === "mine")
   const hidden = queue.filter((t) => isSnoozed(snoozes, slug, t.item.number, t.item.updatedAt)).length
   if (!options.includeSnoozed) queue = queue.filter((t) => !isSnoozed(snoozes, slug, t.item.number, t.item.updatedAt))
   return { me, profile, queue, hidden, scanned: items.length, ms: Math.round(performance.now() - t0) }

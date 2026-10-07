@@ -2,6 +2,7 @@ import type { Assessment, Scored } from "../classify/Classifier.ts"
 import { RISK_LEVELS, SEVERITY_LEVELS, THRESHOLDS, VALUE_LEVELS } from "../classify/questions.ts"
 import type { TriageItem } from "../github/model.ts"
 import { ACTION_TITLES, type TriagePlan } from "../triage/plan.ts"
+import { isBot } from "../triage/roster.ts"
 import { bar, bold, chip, cyan, dim, gray, green, hr, italic, magenta, red, terminalWidth, truncate, wrapText, yellow } from "./ansi.ts"
 
 const ago = (iso: string): string => {
@@ -48,7 +49,8 @@ export const renderBody = (item: TriageItem, maxLines = 28): string => {
   const lines = wrapText(body, width - 2)
   const shown = lines.slice(0, maxLines).map((l) => `  ${styleMarkdownLine(l)}`)
   if (lines.length > maxLines) shown.push(dim(`  … ${lines.length - maxLines} more lines (press v to page the markdown)`))
-  const comments = item.comments.slice(0, 2).map((c) =>
+  // The card is a preview; preview-deployment and CI bots add nothing here.
+  const comments = item.comments.filter((c) => !isBot(c.author)).slice(0, 2).map((c) =>
     `${hr(width)}\n  ${bold("@" + c.author)} ${dim(ago(c.createdAt))}\n` +
     wrapText(c.body.trim(), width - 4).slice(0, 6).map((l) => `    ${dim(l)}`).join("\n")
   )
