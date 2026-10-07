@@ -1,5 +1,28 @@
 # @cephalization/px-triage
 
+## 0.3.0
+
+### Minor Changes
+
+- [#8](https://github.com/cephalization/px-triage/pull/8) [`44d86c1`](https://github.com/cephalization/px-triage/commit/44d86c14c53360b6d0076b677a26aa0095b4aa3d) Thanks [@cephalization](https://github.com/cephalization)! - Agent-facing commands: `pxt queue`, `pxt next`, `pxt show <n>`, and
+  `pxt apply <n>` run the triage loop non-interactively with `--json` output,
+  ready-to-run command hints, dry runs, and provenance (`--actor`, `--session`).
+  `pxt skill` prints SKILL.md for agents. Agent decisions are stored as LLM
+  annotations and excluded from `pxt train` unless `--include-agents`.
+  
+  Fixes: TypeSafe score answers are probability-weighted, so severity/value/risk
+  now route on the most likely level (priority labels were never applied before).
+  Comment templates take docs/community/contributing links from the repo config
+  instead of hard-coding Phoenix's.
+
+### Patch Changes
+
+- [#9](https://github.com/cephalization/px-triage/pull/9) [`85e1017`](https://github.com/cephalization/px-triage/commit/85e10175113e4cc6b4f1074601d4c4cbd4d02d05) Thanks [@cephalization](https://github.com/cephalization)! - Phoenix traces are easier to read: GitHub TOOL spans record what they were
+  asked to do and what came back, `triage.apply` records its result, and
+  `triage.decide` records skip/quit/cancel outcomes. `pxt train` no longer
+  leaks experiment task spans into the triage project, and the experiment task
+  is named `triageWithCurrentQuestions` instead of `task`.
+
 ## 0.2.0
 
 ### Minor Changes
