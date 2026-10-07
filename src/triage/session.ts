@@ -411,6 +411,7 @@ const triageOne = Effect.fnUntraced(function*(
 
   switch (choice._tag) {
     case "quit":
+      yield* Effect.annotateCurrentSpan({ "triage.chosen": "quit", [SemanticConventions.OUTPUT_VALUE]: "quit" })
       return { _tag: "quit" } satisfies Outcome
     case "open":
       yield* openInBrowser(item.url)
@@ -444,10 +445,15 @@ const triageOne = Effect.fnUntraced(function*(
       return yield* finish(plan.action, resolved)
     }
     case "action": {
-      if (choice.action === "skip") return { _tag: "skip" } satisfies Outcome
+      if (choice.action === "skip") {
+        yield* Effect.annotateCurrentSpan({ "triage.chosen": "skip", "triage.accepted": false, [SemanticConventions.OUTPUT_VALUE]: "skip" })
+        return { _tag: "skip" } satisfies Outcome
+      }
       const resolved = yield* runFlow(choice.action, item, plan, assessment, profile)
       if (resolved) {
         yield* Effect.annotateCurrentSpan({ "triage.chosen": choice.action, "triage.accepted": plan?.action === choice.action, [SemanticConventions.OUTPUT_VALUE]: describe(resolved) })
+      } else {
+        yield* Effect.annotateCurrentSpan({ [SemanticConventions.OUTPUT_VALUE]: `${choice.action} cancelled` })
       }
       return yield* finish(choice.action, resolved)
     }
