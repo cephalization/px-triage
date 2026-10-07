@@ -1,5 +1,23 @@
 # @cephalization/px-triage
 
+## 0.4.0
+
+### Minor Changes
+
+- [#12](https://github.com/cephalization/px-triage/pull/12) [`28b2f42`](https://github.com/cephalization/px-triage/commit/28b2f42765400bb4c46713d74b603a7683442384) Thanks [@cephalization](https://github.com/cephalization)! - New `pxt team` mode: what should I work on or unblock next, strictly from my
+  team. Open items from teammates are bucketed by what they are waiting on
+  (review requested from you, assigned to you, author pushed after changes were
+  requested, PR with no reviewer, approved but unmerged, failing checks, issue
+  with no owner) and walked with hotkeys: open, take, nudge, done-until-it-changes.
+  `--json` lists the same for agents. `--mine` narrows to your own plate. Bot comments (preview deployments,
+  CI apps) are hidden from the item card preview.
+
+### Patch Changes
+
+- [#12](https://github.com/cephalization/px-triage/pull/12) [`28b2f42`](https://github.com/cephalization/px-triage/commit/28b2f42765400bb4c46713d74b603a7683442384) Thanks [@cephalization](https://github.com/cephalization)! - Use the official `@arizeai/openinference-instrumentation-typesafe` (0.4.3,
+  now published with the `decision.*` conventions) for Jev spans instead of a
+  hand-rolled wrapper. Span shape is unchanged.
+
 ## 0.3.0
 
 ### Minor Changes
