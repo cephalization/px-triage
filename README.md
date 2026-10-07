@@ -110,6 +110,33 @@ duplicates of it with cross-referencing comments.
 | PR sent for review | Issue gets the PR's labels and is assigned to the reviewer | Other issues closed as duplicates of the first |
 | PR closed or needs-info | Nothing; a PR's fate says little about the issue | Nothing |
 
+## The team queue
+
+`pxt team` is the other triage loop maintainers run: not external
+contributions, but "what from my own team needs me next". It scans the repo's
+open PRs and issues, keeps items authored by teammates (roster or
+member/collaborator), drops anything still in the `triage` queue, and buckets
+the rest by what they are waiting on. Review work comes first (it blocks a
+teammate), longest-waiting first; your own plate and unowned issues follow,
+most recently active first, and unowned issues opened more than `--window`
+days ago (default 14) are left out:
+
+| bucket | meaning |
+| --- | --- |
+| Review requested from you | a teammate asked you to review |
+| Author pushed after changes were requested | time for a re-review |
+| Teammate PR waiting for a reviewer | no approval and nobody on it |
+| Approved and green, not merged | someone should merge |
+| Teammate PR with failing checks | needs unblocking |
+| Assigned to you | issues and PRs on your plate, plus your own PRs when blocked on you |
+| Teammate issue with no owner | recent issue that needs an assignee |
+
+Keys: `Enter` opens in the browser, `t` takes it (request your review, or
+assign yourself), `n` posts a short nudge to whoever it is waiting on, `d`
+marks it done until it changes on GitHub, `s` skips, `v` pages the markdown.
+`--json` returns the same list for agents; `--everyone` includes
+non-teammates.
+
 ## For agents
 
 Every step of the loop is one stateless command with `--json` output
@@ -182,6 +209,7 @@ on first use. Environment overrides: `TYPESAFE_API_KEY`, `PX_TRIAGE_MODEL`,
 pxt                          # walk the queue
 pxt --only prs --dry-run     # preview PR triage, change nothing
 pxt --number 1234            # one item
+pxt team                     # what from my team needs me next (reviews, re-reviews, unmerged, CI, unowned)
 pxt automate                 # write a workflow that labels new issues/PRs for triage; opens a PR
 pxt next --json              # agent loop: head of the queue as JSON (see "For agents")
 pxt apply 1234 --accept --json

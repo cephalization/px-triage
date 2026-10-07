@@ -40,6 +40,12 @@ export const PrDetails = Schema.Struct({
   reviewCount: Schema.Int,
   /** Logins of people who have left a review. */
   reviewers: Schema.Array(Schema.String),
+  /** Latest review per reviewer, newest first. */
+  reviews: Schema.Array(Schema.Struct({ author: Schema.String, state: Schema.String, submittedAt: Schema.String })),
+  /** APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null (no protection rule). */
+  reviewDecision: Schema.NullOr(Schema.String),
+  /** CLEAN | BLOCKED | BEHIND | DIRTY | UNSTABLE | HAS_HOOKS | DRAFT | UNKNOWN */
+  mergeStateStatus: Schema.NullOr(Schema.String),
   requestedReviewers: Schema.Array(Schema.String),
   linkedIssues: Schema.Array(Schema.Struct({ number: Schema.Int, title: Schema.String })),
   checks: Schema.NullOr(Schema.String)
