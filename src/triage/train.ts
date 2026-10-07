@@ -55,6 +55,8 @@ export interface TrainOptions {
   readonly limit: number
   readonly concurrency: number
   readonly apply: boolean
+  /** Count decisions made by agents (LLM annotations) as ground truth too. */
+  readonly includeAgents: boolean
 }
 
 interface Labeled {
@@ -84,8 +86,12 @@ export const runTrain = Effect.fnUntraced(function*(options: TrainOptions) {
   // Phoenix annotations are the shared source of truth (every teammate's
   // decisions); the local log only fills in anything that never made it there.
   const t0 = performance.now()
-  const remote = yield* phoenix.listHumanDecisions(slug)
-  const local = (yield* readDecisions).filter((d) => d.repo === slug && !d.dryRun && d.chosen !== "skip")
+  // Agent decisions are excluded by default: an agent that accepts every
+  // suggestion would make the model look perfect.
+  const remoteAll = yield* phoenix.listHumanDecisions(slug)
+  const remote = options.includeAgents ? remoteAll : remoteAll.filter((r) => r.annotatorKind === "HUMAN")
+  const localAll = (yield* readDecisions).filter((d) => d.repo === slug && !d.dryRun && d.chosen !== "skip")
+  const local = options.includeAgents ? localAll : localAll.filter((d) => !d.actor?.startsWith("agent:"))
   const decisions: Array<Decision> = [
     ...remote.map(toDecision(slug)),
     ...local.filter((d) => !remote.some((r) => r.number === d.number))
@@ -93,7 +99,8 @@ export const runTrain = Effect.fnUntraced(function*(options: TrainOptions) {
   const latestByNumber = new Map<number, Decision>()
   for (const d of [...decisions].sort((a, b) => a.ts.localeCompare(b.ts))) latestByNumber.set(d.number, d)
   const triagers = new Set(remote.map((r) => r.triager).filter((t): t is string => t !== null))
-  yield* Console.log(dim(`decisions: ${remote.length} from Phoenix${triagers.size ? ` (${[...triagers].map((t) => "@" + t).join(", ")})` : ""} · ${decisions.length - remote.length} local-only`))
+  const agentCount = remoteAll.length - remoteAll.filter((r) => r.annotatorKind === "HUMAN").length
+  yield* Console.log(dim(`decisions: ${remote.length} from Phoenix${triagers.size ? ` (${[...triagers].map((t) => "@" + t).join(", ")})` : ""} · ${decisions.length - remote.length} local-only${agentCount ? ` · ${agentCount} agent decision${agentCount === 1 ? "" : "s"} ${options.includeAgents ? "included" : "excluded (--include-agents)"}` : ""}`))
   const history = yield* github.fetchHistory(options)
   const humanNumbers = [...latestByNumber.keys()]
   const humanItems = yield* Effect.forEach(

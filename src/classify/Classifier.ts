@@ -35,8 +35,10 @@ export interface Distribution<K extends string = string> {
 }
 
 export interface Scored {
-  /** Index into the level list (0 = lowest). */
+  /** TypeSafe's probability-weighted position on the level scale (e.g. 0.41). */
   readonly score: number
+  /** Most likely level: index into the level list (0 = lowest). Use this for routing. */
+  readonly level: number
   readonly confidence: number
   readonly probabilities: ReadonlyArray<number>
 }
@@ -70,7 +72,7 @@ const DistributionSchema = Schema.Struct({
   confidence: Schema.Number,
   probabilities: Schema.Record(Schema.String, Schema.Number)
 })
-const ScoredSchema = Schema.NullOr(Schema.Struct({ score: Schema.Number, confidence: Schema.Number, probabilities: Schema.Array(Schema.Number) }))
+const ScoredSchema = Schema.NullOr(Schema.Struct({ score: Schema.Number, level: Schema.optional(Schema.Number), confidence: Schema.Number, probabilities: Schema.Array(Schema.Number) }))
 /** Loose on-disk shape; the narrow literal unions are only needed at the call site. */
 const CachedAssessment = Schema.Struct({
   kind: Schema.Literals(["issue", "pull_request"]),
@@ -175,7 +177,11 @@ export class Classifier extends Context.Service<Classifier, {
             Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(CachedAssessment))),
             // The on-disk shape is validated structurally; the literal unions were
             // produced by the same question set (hash is part of the cache key).
-            Effect.map((a): Assessment => ({ ...(a as unknown as Assessment), latencyMs: 0, cached: true })),
+            Effect.map((a): Assessment => {
+              const withLevel = (sc: { readonly score: number; readonly confidence: number; readonly probabilities: ReadonlyArray<number>; readonly level?: number | undefined } | null) =>
+                sc ? { ...sc, level: sc.level ?? argmax(sc.probabilities) } : null
+              return { ...(a as unknown as Assessment), severity: withLevel(a.severity), value: withLevel(a.value), risk: withLevel(a.risk), latencyMs: 0, cached: true }
+            }),
             Effect.option
           )
 
@@ -205,14 +211,15 @@ const toScored = (r: {
   readonly score: number
   readonly confidence: number
   readonly probabilities: Readonly<Record<string, number>>
-}): Scored => ({
-  score: r.score,
-  confidence: r.confidence,
-  probabilities: Object.keys(r.probabilities)
+}): Scored => {
+  const probabilities = Object.keys(r.probabilities)
     .map(Number)
     .sort((a, b) => a - b)
     .map((k) => r.probabilities[String(k)] ?? 0)
-})
+  return { score: r.score, level: argmax(probabilities), confidence: r.confidence, probabilities }
+}
+
+export const argmax = (xs: ReadonlyArray<number>): number => xs.reduce((best, x, i) => (x > (xs[best] ?? -Infinity) ? i : best), 0)
 
 const clip = (s: string, max: number) => (s.length <= max ? s : s.slice(0, max) + `\n…[truncated ${s.length - max} chars]`)
 

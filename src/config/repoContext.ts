@@ -10,6 +10,13 @@ import { type Repo, repoSlug } from "../github/model.ts"
 import { dim, yellow } from "../ui/ansi.ts"
 import { AppConfig, CONFIG_FILE } from "./AppConfig.ts"
 
+export const PHOENIX_LINKS = {
+  docsUrl: "https://arize.com/docs/phoenix",
+  communityUrl: "https://arize-ai.slack.com",
+  communityName: "Slack",
+  contributingUrl: "https://github.com/Arize-ai/phoenix/blob/main/CONTRIBUTING.md"
+}
+
 export const resolveRepoContext = Effect.fnUntraced(function*(repo: Repo) {
   const appConfig = yield* AppConfig
   const slug = repoSlug(repo)
@@ -17,7 +24,12 @@ export const resolveRepoContext = Effect.fnUntraced(function*(repo: Repo) {
   if (saved) return saved
 
   if (slug.toLowerCase() === "arize-ai/phoenix") {
-    yield* appConfig.updateRepo(slug, { description: PHOENIX_CONTEXT }).pipe(Effect.ignore)
+    yield* appConfig
+      .updateRepo(slug, {
+        description: PHOENIX_CONTEXT,
+        links: appConfig.repoConfig(slug).links ?? PHOENIX_LINKS
+      })
+      .pipe(Effect.ignore)
     return PHOENIX_CONTEXT
   }
 

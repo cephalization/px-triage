@@ -49,8 +49,10 @@ export interface HumanFeedback {
   readonly labels: ReadonlyArray<string>
   readonly assignees: ReadonlyArray<string>
   readonly selfAssigned: boolean
-  /** GitHub login of the person triaging. */
+  /** GitHub login of the person triaging, or "agent:<name>" for non-interactive runs. */
   readonly triager: string | null
+  /** HUMAN for the interactive TUI; LLM when an agent drove the decision. */
+  readonly annotatorKind?: "HUMAN" | "LLM"
 }
 
 /** A human decision read back from Phoenix (the shared source of truth). */
@@ -66,6 +68,7 @@ export interface RemoteDecision {
   readonly assignees: ReadonlyArray<string>
   readonly selfAssigned: boolean
   readonly triager: string | null
+  readonly annotatorKind: "HUMAN" | "LLM" | "CODE"
   readonly spanId: string
   readonly at: string
 }
@@ -112,7 +115,7 @@ export class Phoenix extends Context.Service<Phoenix, {
             spanAnnotation: {
               spanId,
               name: "triage.human",
-              annotatorKind: "HUMAN",
+              annotatorKind: f.annotatorKind ?? "HUMAN",
               label: f.chosen,
               score: f.accepted ? 1 : 0,
               explanation: f.suggested ? `suggested ${f.suggested}, chose ${f.chosen}` : `no suggestion, chose ${f.chosen}`,
@@ -197,6 +200,7 @@ export class Phoenix extends Context.Service<Phoenix, {
                   assignees: Array.isArray(m["assignees"]) ? (m["assignees"] as Array<string>) : [],
                   selfAssigned: m["selfAssigned"] === true,
                   triager: typeof m["triager"] === "string" ? m["triager"] : null,
+                  annotatorKind: a.annotator_kind,
                   spanId: a.span_id,
                   at: a.created_at
                 })

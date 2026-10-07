@@ -31,7 +31,7 @@ import { isMaintainer, propagate } from "./links.ts"
 import { ACTION_TITLES, type ActionKind, type TriagePlan, suggestPlan } from "./plan.ts"
 import { type RepoProfile, RepoProfiles, labelColors } from "./profile.ts"
 import { TRIAGE_LABEL, WORKFLOW_LABEL_ALIASES, type WorkflowLabelKey, workflowLabel } from "./roster.ts"
-import { CLOSE_TEMPLATES, NEEDS_INFO_TEMPLATES, type Template, renderTemplate, templatesFor } from "./templates.ts"
+import { CLOSE_TEMPLATES, NEEDS_INFO_TEMPLATES, type RepoLinks, type Template, renderTemplate, templatesFor } from "./templates.ts"
 
 export interface SessionOptions {
   readonly repo: Repo
@@ -41,6 +41,8 @@ export interface SessionOptions {
   readonly number: Option.Option<number>
   readonly dryRun: boolean
   readonly concurrency: number
+  /** Docs / community / contributing links used in comment templates. */
+  readonly links?: RepoLinks | undefined
 }
 
 type MenuChoice = { readonly _tag: "accept"; readonly assignee?: "me" | "choose" } | { readonly _tag: "action"; readonly action: ActionKind } | { readonly _tag: "open" } | { readonly _tag: "view" } | { readonly _tag: "quit" }
@@ -312,7 +314,7 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
  * recent decision for, drop what no longer carries the queue label, and push
  * recently skipped items to the back of the line.
  */
-const reconcileQueue = Effect.fnUntraced(function*(
+export const reconcileQueue = Effect.fnUntraced(function*(
   github: GitHub["Service"],
   options: SessionOptions,
   fetched: ReadonlyArray<number>
@@ -342,18 +344,19 @@ const reconcileQueue = Effect.fnUntraced(function*(
  * Pull the newest applied learnings from Phoenix (published by `pxt train --apply`,
  * by anyone on the team) and save them locally when they differ.
  */
-const syncLearned = Effect.fnUntraced(function*(profile: RepoProfile, repo: Repo) {
+export const syncLearned = Effect.fnUntraced(function*(profile: RepoProfile, repo: Repo, options?: { readonly quiet?: boolean }) {
   const phoenix = yield* Phoenix
   if (!phoenix.enabled) return profile
+  const say = (line: string) => (options?.quiet ? Effect.void : Console.log(line))
   const t0 = performance.now()
   const applied = yield* phoenix.fetchAppliedLearned(`px-triage/${repoSlug(repo)}`).pipe(Effect.orElseSucceed(() => null))
   const ms = dim(`${Math.round(performance.now() - t0)}ms`)
   if (!applied) {
-    yield* Console.log(`${dim("·")} ${"learnings".padEnd(13)} ${dim("none applied yet · run `pxt train --apply`")} ${ms}`)
+    yield* say(`${dim("·")} ${"learnings".padEnd(13)} ${dim("none applied yet · run `pxt train --apply`")} ${ms}`)
     return profile
   }
   if (profile.learned?.experimentId === applied.experimentId) {
-    yield* Console.log(`${green("✔")} ${"learnings".padEnd(13)} ${dim(`up to date (experiment ${applied.experimentId.slice(0, 12)}…)`)} ${ms}`)
+    yield* say(`${green("✔")} ${"learnings".padEnd(13)} ${dim(`up to date (experiment ${applied.experimentId.slice(0, 12)}…)`)} ${ms}`)
     return profile
   }
   const updated: RepoProfile = { ...profile, learned: applied.learned }
@@ -363,7 +366,7 @@ const syncLearned = Effect.fnUntraced(function*(profile: RepoProfile, repo: Repo
     Object.keys(applied.learned.policy).length ? `${Object.keys(applied.learned.policy).length} policy rule${Object.keys(applied.learned.policy).length === 1 ? "" : "s"}` : null,
     Object.keys(applied.learned.owners).length ? `owners for ${Object.keys(applied.learned.owners).length} components` : null
   ].filter(Boolean).join(", ")
-  yield* Console.log(`${green("✔")} ${"learnings".padEnd(13)} ${dim(`applied from Phoenix${applied.appliedBy ? ` (by @${applied.appliedBy})` : ""}: ${what || "nothing"}`)} ${ms}`)
+  yield* say(`${green("✔")} ${"learnings".padEnd(13)} ${dim(`applied from Phoenix${applied.appliedBy ? ` (by @${applied.appliedBy})` : ""}: ${what || "nothing"}`)} ${ms}`)
   return updated
 })
 
@@ -438,7 +441,7 @@ const triageOne = Effect.fnUntraced(function*(
         const picked = yield* pickPerson(profile, plan.action === "review" ? "Request review from" : "Assign to", plan.action === "review" ? plan.suggestedReviewers.users : plan.suggestedAssignees, true)
         assignee = picked === "" ? null : picked
       }
-      const resolved = yield* quickApply(item, plan, assessment, profile, assignee)
+      const resolved = yield* quickApply(item, plan, assessment, profile, assignee, options.links)
       if (!resolved) return { _tag: "stay" } satisfies Outcome
       yield* Console.log(`  ${green("↳")} ${describe(resolved)}`)
       yield* Effect.annotateCurrentSpan({ "triage.chosen": plan.action, "triage.accepted": true, [SemanticConventions.OUTPUT_VALUE]: describe(resolved) })
@@ -449,7 +452,7 @@ const triageOne = Effect.fnUntraced(function*(
         yield* Effect.annotateCurrentSpan({ "triage.chosen": "skip", "triage.accepted": false, [SemanticConventions.OUTPUT_VALUE]: "skip" })
         return { _tag: "skip" } satisfies Outcome
       }
-      const resolved = yield* runFlow(choice.action, item, plan, assessment, profile)
+      const resolved = yield* runFlow(choice.action, item, plan, assessment, profile, options.links)
       if (resolved) {
         yield* Effect.annotateCurrentSpan({ "triage.chosen": choice.action, "triage.accepted": plan?.action === choice.action, [SemanticConventions.OUTPUT_VALUE]: describe(resolved) })
       } else {
@@ -460,10 +463,10 @@ const triageOne = Effect.fnUntraced(function*(
   }
 })
 
-const runFlow = (action: ActionKind, item: TriageItem, plan: TriagePlan | null, assessment: Assessment | null, profile: RepoProfile) => {
+const runFlow = (action: ActionKind, item: TriageItem, plan: TriagePlan | null, assessment: Assessment | null, profile: RepoProfile, links?: RepoLinks) => {
   switch (action) {
     case "needs_info":
-      return flowNeedsInfo(item, plan, profile)
+      return flowNeedsInfo(item, plan, profile, links)
     case "bug":
       return flowBug(item, plan, profile)
     case "feature":
@@ -471,7 +474,7 @@ const runFlow = (action: ActionKind, item: TriageItem, plan: TriagePlan | null, 
     case "review":
       return flowReview(item, plan, profile)
     case "close":
-      return flowClose(item, plan, assessment, profile)
+      return flowClose(item, plan, assessment, profile, links)
     case "skip":
       return Effect.succeed(null)
   }
@@ -523,8 +526,8 @@ const renderLegend = (keys: ReadonlyArray<Hotkey<MenuChoice>>, hasDefault: boole
 /**
  * `assignee`: undefined → use the suggestion; null → nobody; string → that login.
  */
-const quickApply = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan, assessment: Assessment, profile: RepoProfile, assignee?: string | null) {
-  const ctx = { author: item.author, number: item.number, title: item.title }
+export const quickApply = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan, assessment: Assessment, profile: RepoProfile, assignee?: string | null, links?: RepoLinks) {
+  const ctx = { author: item.author, number: item.number, title: item.title, links }
   const NEEDS_INFO_LABEL = workflowLabel(profile, "needsInfo")
   const BACKLOG_LABEL = workflowLabel(profile, "backlog")
   const labelsToRemove = removeTriage(item)
@@ -545,7 +548,7 @@ const quickApply = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePla
     case "feature": {
       // Default scheduling: high-value → assign now, otherwise backlog. An
       // explicit assignee always means "now".
-      const now = assignee ? true : (assessment.value?.score ?? 0) >= 2
+      const now = assignee ? true : (assessment.value?.level ?? 0) >= 2
       const owner = assignee === undefined ? plan.suggestedAssignees[0] : assignee
       return {
         ...base,
@@ -581,7 +584,7 @@ const quickApply = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePla
 })
 
 /** Template labels are workflow keys ("wontfix", "duplicate", …); resolve them against this repo's labels. */
-const templateLabels = (profile: RepoProfile, template: Template | null | undefined): Array<string> =>
+export const templateLabels = (profile: RepoProfile, template: Template | null | undefined): Array<string> =>
   (template?.labels ?? []).map((l) => resolveTemplateLabel(profile, l)).filter((l): l is string => l !== null)
 
 const resolveTemplateLabel = (profile: RepoProfile, name: string): string | null => {
@@ -590,7 +593,7 @@ const resolveTemplateLabel = (profile: RepoProfile, name: string): string | null
 }
 
 /** Choose the template that best matches the classifier's read. */
-const pickDefaultTemplate = (templates: ReadonlyArray<Template>, item: TriageItem, a: Assessment): Template => {
+export const pickDefaultTemplate = (templates: ReadonlyArray<Template>, item: TriageItem, a: Assessment): Template => {
   const by = (id: string) => templates.find((t) => t.id === id)
   const cat = a.category.choice
   const pick =
@@ -608,9 +611,9 @@ const pickDefaultTemplate = (templates: ReadonlyArray<Template>, item: TriageIte
 // Guided flows (letter keys). Each returns a ResolvedPlan or null on cancel.
 // ---------------------------------------------------------------------------
 
-const dedupe = (item: TriageItem, labels: ReadonlyArray<string | null>) =>
+export const dedupe = (item: TriageItem, labels: ReadonlyArray<string | null>) =>
   [...new Set(labels.filter((l): l is string => l !== null))].filter((l) => !item.labels.includes(l))
-const removeTriage = (item: TriageItem) => (item.labels.includes(TRIAGE_LABEL) ? [TRIAGE_LABEL] : [])
+export const removeTriage = (item: TriageItem) => (item.labels.includes(TRIAGE_LABEL) ? [TRIAGE_LABEL] : [])
 
 const labelChoices = (item: TriageItem, profile: RepoProfile, preselected: ReadonlyArray<string>) => {
   const all = [...new Set([...preselected, ...profile.labels.map((l) => l.name)])].filter(
@@ -641,9 +644,9 @@ const pickTemplate = (templates: ReadonlyArray<Template>, item: TriageItem) =>
     ]
   })
 
-const composeComment = Effect.fnUntraced(function*(item: TriageItem, templates: ReadonlyArray<Template>) {
+const composeComment = Effect.fnUntraced(function*(item: TriageItem, templates: ReadonlyArray<Template>, links?: RepoLinks) {
   const template = yield* pickTemplate(templates, item)
-  const initial = template ? renderTemplate(template, { author: item.author, number: item.number, title: item.title }) : ""
+  const initial = template ? renderTemplate(template, { author: item.author, number: item.number, title: item.title, links }) : ""
   const needsEdit = template === null || /#NNN/.test(initial)
   const edit = needsEdit ? true : yield* Prompt.Confirm({ message: "Edit the comment in $EDITOR before posting?", initial: false })
   const body = edit ? yield* editText(initial) : initial
@@ -657,8 +660,8 @@ const composeComment = Effect.fnUntraced(function*(item: TriageItem, templates: 
 
 const confirmPlan = (resolved: ResolvedPlan) => Prompt.Confirm({ message: `Apply: ${describe(resolved)}?`, initial: true })
 
-const flowNeedsInfo = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
-  const composed = yield* composeComment(item, NEEDS_INFO_TEMPLATES)
+const flowNeedsInfo = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile, links?: RepoLinks) {
+  const composed = yield* composeComment(item, NEEDS_INFO_TEMPLATES, links)
   if (!composed) return null
   const resolved: ResolvedPlan = {
     comment: composed.body,
@@ -738,8 +741,8 @@ const flowReview = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePla
   return (yield* confirmPlan(resolved)) ? resolved : null
 })
 
-const flowClose = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, _assessment: Assessment | null, profile: RepoProfile) {
-  const composed = yield* composeComment(item, CLOSE_TEMPLATES)
+const flowClose = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, _assessment: Assessment | null, profile: RepoProfile, links?: RepoLinks) {
+  const composed = yield* composeComment(item, CLOSE_TEMPLATES, links)
   if (!composed) return null
   const resolved: ResolvedPlan = {
     comment: composed.body,

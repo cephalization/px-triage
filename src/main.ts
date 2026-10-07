@@ -1,7 +1,10 @@
 import { NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node"
-import { Console, Effect, Layer, Option } from "effect"
+import { Console, Effect, FileSystem, Layer, Option } from "effect"
 import { HttpClient } from "effect/http"
-import { Command, Flag } from "effect/cli"
+import { Argument, Command, Flag } from "effect/cli"
+import { EXIT_EMPTY, agentContext, emitError, parseActionFlag, runApply, runNext, runQueue, runShow } from "./agent/commands.ts"
+import { resolveSessionId } from "./agent/core.ts"
+import { SKILL_MD } from "./agent/skill.ts"
 import { runAutomate } from "./automate/automate.ts"
 import { Classifier } from "./classify/Classifier.ts"
 import { AppConfig, CONFIG_FILE, runOnboarding, writeConfig } from "./config/AppConfig.ts"
@@ -96,7 +99,8 @@ const triage = Command.make(
       only: input.only,
       number: input.number,
       dryRun: input.dryRun,
-      concurrency: input.concurrency
+      concurrency: input.concurrency,
+      links: (yield* AppConfig).repoConfig(repoSlug(repo)).links
     }).pipe(Effect.provide(appLayer(repo, input)), handleErrors)
   })
 ).pipe(
@@ -120,7 +124,8 @@ const train = Command.make(
     concurrency: concurrencyFlag,
     noTrace: noTraceFlag,
     noCache: noCacheFlag,
-    apply: Flag.Boolean("apply").pipe(Flag.withDescription("Write learned thresholds / policy / owners into the repo profile"), Flag.withDefault(false))
+    apply: Flag.Boolean("apply").pipe(Flag.withDescription("Write learned thresholds / policy / owners into the repo profile"), Flag.withDefault(false)),
+    includeAgents: Flag.Boolean("include-agents").pipe(Flag.withDescription("Treat agent-made decisions as ground truth too (humans only by default)"), Flag.withDefault(false))
   },
   Effect.fn(function*(input) {
     yield* Console.log(banner() + dim(" · train"))
@@ -130,7 +135,8 @@ const train = Command.make(
       label: yield* resolveLabel(repo, input.label),
       limit: input.limit,
       concurrency: input.concurrency,
-      apply: input.apply
+      apply: input.apply,
+      includeAgents: input.includeAgents
       // The experiment traces itself into its own Phoenix project; our tracer
       // would capture those task spans into the triage project instead.
     }).pipe(Effect.provide(appLayer(repo, { model: input.model, dryRun: true, noTrace: true, noCache: input.noCache })), handleErrors)
@@ -152,6 +158,115 @@ const roster = Command.make(
     }).pipe(Effect.provide(appLayer(repo, { model: Option.none(), dryRun: true, noTrace: true, noCache: false })), handleErrors)
   })
 ).pipe(Command.withDescription("Show the generated repo profile (owners, reviewers, label mapping); --refresh regenerates it"))
+
+// ---------------------------------------------------------------------------
+// Agent-facing, non-interactive commands. JSON in, JSON out, no prompts.
+// ---------------------------------------------------------------------------
+
+const jsonFlag = Flag.Boolean("json").pipe(Flag.withDescription("Machine-readable output (schema 1)"), Flag.withDefault(false))
+const sessionFlag = Flag.String("session").pipe(Flag.withDescription("Phoenix session id to group traces across invocations (or PX_TRIAGE_SESSION)"), Flag.optional)
+const actorFlag = Flag.String("actor").pipe(Flag.withDescription("Who is deciding, e.g. agent:claude (default: your login at a TTY, agent:unknown otherwise)"), Flag.optional)
+const onlyFlag = Flag.Literals("only", ["all", "issues", "prs"]).pipe(Flag.withDescription("Restrict to issues or pull requests"), Flag.withDefault("all"))
+
+type AgentServices = Layer.Success<ReturnType<typeof appLayer>> | AppConfig | FileSystem.FileSystem
+
+const withAgentContext = <A, E>(
+  input: { repo: Option.Option<string>; label: Option.Option<string>; session: Option.Option<string>; actor: Option.Option<string>; model: Option.Option<string>; noTrace: boolean; noCache: boolean; json: boolean },
+  dryRun: boolean,
+  body: (ctx: ReturnType<typeof agentContext>) => Effect.Effect<A, E, AgentServices>
+) =>
+  Effect.gen(function*() {
+    const repo = yield* resolveRepo(input.repo)
+    const label = yield* resolveLabel(repo, input.label)
+    yield* Effect.gen(function*() {
+      const me = yield* GitHub.pipe(Effect.flatMap((g) => g.viewer), Effect.orElseSucceed(() => null))
+      const links = (yield* AppConfig).repoConfig(repoSlug(repo)).links
+      const ctx = agentContext(repo, label, input.session, input.actor, me, resolveSessionId(input.session), links)
+      yield* body(ctx)
+    }).pipe(
+      Effect.provide(appLayer(repo, { model: input.model, dryRun, noTrace: input.noTrace, noCache: input.noCache })),
+      Effect.catch((e) => emitError(input.json, e))
+    )
+  })
+
+const commonAgentFlags = { repo: repoFlag, label: labelFlag, session: sessionFlag, actor: actorFlag, model: modelFlag, noTrace: noTraceFlag, noCache: noCacheFlag, json: jsonFlag }
+
+const queue = Command.make(
+  "queue",
+  { ...commonAgentFlags, only: onlyFlag, limit: limitFlag, concurrency: concurrencyFlag, noClassify: Flag.Boolean("no-classify").pipe(Flag.withDescription("List without running Jev (fast)"), Flag.withDefault(false)) },
+  Effect.fn(function*(input) {
+    yield* withAgentContext(input, true, (ctx) => runQueue(ctx, { only: input.only, limit: input.limit, classify: !input.noClassify, concurrency: input.concurrency, json: input.json }))
+  })
+).pipe(Command.withDescription(`List the queue with Jev's suggestion per item. Exit ${EXIT_EMPTY} when empty.`))
+
+const show = Command.make(
+  "show",
+  { ...commonAgentFlags, number: Argument.Int("number").pipe(Argument.withDescription("Issue or PR number")) },
+  Effect.fn(function*(input) {
+    yield* withAgentContext(input, true, (ctx) => runShow(ctx, input.number, input.json))
+  })
+).pipe(Command.withDescription("Describe one item: body, comments, assessment, suggestion, accept preview, and ready-to-run apply commands"))
+
+const next = Command.make(
+  "next",
+  { ...commonAgentFlags, only: onlyFlag },
+  Effect.fn(function*(input) {
+    yield* withAgentContext(input, true, (ctx) => runNext(ctx, { only: input.only, json: input.json }))
+  })
+).pipe(Command.withDescription(`Show the head of the queue (same shape as show). Exit ${EXIT_EMPTY} when the queue is empty.`))
+
+const apply = Command.make(
+  "apply",
+  {
+    ...commonAgentFlags,
+    number: Argument.Int("number").pipe(Argument.withDescription("Issue or PR number")),
+    action: Flag.Literals("action", ["needs-info", "bug", "feature", "review", "close", "skip"]).pipe(Flag.withDescription("What to do"), Flag.optional),
+    accept: Flag.Boolean("accept").pipe(Flag.withDescription("Take Jev's suggestion with defaults (refused when uncertain unless --force)"), Flag.withDefault(false)),
+    assign: Flag.String("assign").pipe(Flag.withDescription("Assignee login (bug/feature) or reviewer (review)"), Flag.optional),
+    assignMe: Flag.Boolean("assign-me").pipe(Flag.withDescription("Assign / request review from the authenticated user"), Flag.withDefault(false)),
+    reviewer: Flag.String("reviewer").pipe(Flag.withDescription("Additional reviewer login (repeatable)"), Flag.atLeast(0)),
+    labelAdd: Flag.String("add-label").pipe(Flag.withDescription("Additional label to add (repeatable)"), Flag.atLeast(0)),
+    when: Flag.Literals("when", ["now", "backlog", "roadmap"]).pipe(Flag.withDescription("Feature scheduling"), Flag.optional),
+    template: Flag.String("template").pipe(Flag.withDescription("Comment template id for needs-info / close"), Flag.optional),
+    comment: Flag.String("comment").pipe(Flag.withDescription("Comment text (overrides the template)"), Flag.optional),
+    commentFile: Flag.File("comment-file", { mustExist: true }).pipe(Flag.withDescription("Read the comment from a file"), Flag.optional),
+    noPropagate: Flag.Boolean("no-propagate").pipe(Flag.withDescription("Do not touch linked items"), Flag.withDefault(false)),
+    dryRun: Flag.Boolean("dry-run").pipe(Flag.withDescription("Print the plan; change nothing on GitHub"), Flag.withDefault(false)),
+    force: Flag.Boolean("force").pipe(Flag.withDescription("Act even if the item left the queue or the suggestion is uncertain"), Flag.withDefault(false))
+  },
+  Effect.fn(function*(input) {
+    const fileComment = Option.isSome(input.commentFile)
+      ? yield* Effect.tryPromise(() => import("node:fs/promises").then((fs) => fs.readFile(Option.getOrThrow(input.commentFile), "utf8"))).pipe(Effect.orElseSucceed(() => null))
+      : null
+    yield* withAgentContext(input, input.dryRun, (ctx) =>
+      runApply(ctx, input.number, {
+        action: Option.isSome(input.action) ? parseActionFlag(input.action.value) : null,
+        accept: input.accept,
+        assign: Option.getOrNull(input.assign),
+        assignMe: input.assignMe,
+        reviewers: input.reviewer,
+        labels: input.labelAdd,
+        when: Option.getOrNull(input.when),
+        template: Option.getOrNull(input.template),
+        comment: Option.getOrNull(input.comment) ?? (fileComment ? fileComment.replace(/\s+$/, "") : null),
+        propagateLinks: !input.noPropagate,
+        dryRun: input.dryRun,
+        force: input.force
+      }, input.json)
+    )
+  })
+).pipe(
+  Command.withDescription("Apply a triage action to one item without prompts. --accept takes the suggestion; otherwise pass --action and the relevant flags."),
+  Command.withExamples([
+    { command: "px-triage apply 1234 --accept --json", description: "Take Jev's suggestion with defaults" },
+    { command: "px-triage apply 1234 --action bug --assign-me --json", description: "Label as a bug and assign yourself" },
+    { command: "px-triage apply 1234 --action close --template support --dry-run --json", description: "Preview closing as a support question" }
+  ])
+)
+
+const skill = Command.make("skill", {}, Effect.fn(function*() {
+  yield* Console.log(SKILL_MD)
+})).pipe(Command.withDescription("Print agent instructions (SKILL.md) for driving px-triage non-interactively"))
 
 const automate = Command.make(
   "automate",
@@ -182,7 +297,7 @@ const init = Command.make(
 ).pipe(Command.withDescription("Run the first-time setup again (TypeSafe key, Phoenix tracing)"))
 
 const root = triage.pipe(
-  Command.withSubcommands([train, roster, automate, init]),
+  Command.withSubcommands([queue, next, show, apply, skill, train, roster, automate, init]),
   // AppConfig is needed by every subcommand; onboarding runs here on first use.
   Command.provide(AppConfig.layer)
 )

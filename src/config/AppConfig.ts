@@ -26,7 +26,16 @@ export const RepoConfig = Schema.Struct({
   /** What the project is; sent to Jev as context for every question. Edit freely. */
   description: Schema.optional(Schema.String),
   /** Queue label (defaults to "triage"). */
-  label: Schema.optional(Schema.String)
+  label: Schema.optional(Schema.String),
+  /** Links used in comment templates. */
+  links: Schema.optional(
+    Schema.Struct({
+      docsUrl: Schema.optional(Schema.String),
+      communityUrl: Schema.optional(Schema.String),
+      communityName: Schema.optional(Schema.String),
+      contributingUrl: Schema.optional(Schema.String)
+    })
+  )
 })
 export type RepoConfig = typeof RepoConfig.Type
 

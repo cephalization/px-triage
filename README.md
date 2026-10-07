@@ -110,6 +110,27 @@ duplicates of it with cross-referencing comments.
 | PR sent for review | Issue gets the PR's labels and is assigned to the reviewer | Other issues closed as duplicates of the first |
 | PR closed or needs-info | Nothing; a PR's fate says little about the issue | Nothing |
 
+## For agents
+
+Every step of the loop is one stateless command with `--json` output
+(`schema: 1`), so a coding agent can drive triage without a terminal UI:
+
+```bash
+pxt next --json                       # head of the queue: body, assessment, suggestion, accept preview,
+                                      # and ready-to-run `pxt apply` commands; exit 3 when empty
+pxt apply 1234 --accept --json        # take the suggestion with defaults
+pxt apply 1234 --action close --template support --dry-run --json
+pxt queue --json                      # the whole queue with a suggestion per item
+pxt skill                             # prints a SKILL.md explaining all of this to an agent
+```
+
+`apply` never prompts: comments come from `--template`, `--comment`, or
+`--comment-file`; `--accept` is refused when the suggestion is uncertain;
+acting on an item that already left the queue is refused unless `--force`.
+Agent decisions are recorded as `LLM` annotations in Phoenix, tagged with
+`--actor` (default `agent:$PX_TRIAGE_AGENT`), and excluded from training
+unless `pxt train --include-agents`.
+
 ## Install
 
 See the [quick start](#quick-start) above. `--repo owner/name` or the config
@@ -142,13 +163,15 @@ Per-repo settings live under `repos`, keyed by `owner/name`:
 "repos": {
   "owner/name": {
     "description": "One paragraph on what the project is. Jev sees this in every question.",
-    "label": "triage"
+    "label": "triage",
+    "links": { "docsUrl": "https://…", "communityUrl": "https://…", "communityName": "Discord", "contributingUrl": "https://…" }
   }
 }
 ```
 
 `description` is the single most useful thing to edit when suggestions feel
-generic. For unknown repos it is seeded from the GitHub description and topics
+generic. `links` fill in the docs, community, and contributing references in
+comment templates; without them templates point at GitHub Discussions. For unknown repos it is seeded from the GitHub description and topics
 on first use. Environment overrides: `TYPESAFE_API_KEY`, `PX_TRIAGE_MODEL`,
 `PX_TRIAGE_REPO`, `PHOENIX_COLLECTOR_ENDPOINT`, `PHOENIX_API_KEY`,
 `PHOENIX_PROJECT_NAME`, `PX_TRIAGE_HOME`.
@@ -160,6 +183,8 @@ pxt                          # walk the queue
 pxt --only prs --dry-run     # preview PR triage, change nothing
 pxt --number 1234            # one item
 pxt automate                 # write a workflow that labels new issues/PRs for triage; opens a PR
+pxt next --json              # agent loop: head of the queue as JSON (see "For agents")
+pxt apply 1234 --accept --json
 pxt roster                   # show the repo profile; --refresh regenerates it
 pxt train                    # Phoenix dataset + experiment; report agreement and what was learned
 pxt train --apply            # also write learned thresholds / policy / owners into the profile
