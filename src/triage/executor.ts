@@ -62,6 +62,13 @@ export class Executor extends Context.Service<Executor, {
         const applyBody = Effect.fnUntraced(function*(repo: Repo, item: TriageItem, plan: ResolvedPlan) {
           yield* applyTo(repo, item, plan)
           for (const p of plan.propagations ?? []) yield* applyTo(repo, p.target, p.plan)
+          yield* Effect.annotateCurrentSpan({
+            [SemanticConventions.OUTPUT_VALUE]: JSON.stringify({
+              applied: `#${item.number} ${describe(plan)}`,
+              propagated: (plan.propagations ?? []).map((p) => `#${p.target.number} ${describe(p.plan)}`)
+            }),
+            [SemanticConventions.OUTPUT_MIME_TYPE]: "application/json"
+          })
         })
 
         /** One root CHAIN trace per applied plan, with each GitHub call as a TOOL child. */
@@ -71,8 +78,8 @@ export class Executor extends Context.Service<Executor, {
               root: true,
               attributes: {
                 [SemanticConventions.OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.CHAIN,
-                [SemanticConventions.INPUT_VALUE]: `#${item.number} ${describe(plan)}`,
-                [SemanticConventions.INPUT_MIME_TYPE]: "text/plain",
+                [SemanticConventions.INPUT_VALUE]: JSON.stringify({ number: item.number, kind: item.kind, title: item.title, url: item.url, ...plan, propagations: (plan.propagations ?? []).map((p) => ({ number: p.target.number, why: p.why })) }),
+                [SemanticConventions.INPUT_MIME_TYPE]: "application/json",
                 "github.number": item.number,
                 "github.kind": item.kind
               }

@@ -131,7 +131,9 @@ const train = Command.make(
       limit: input.limit,
       concurrency: input.concurrency,
       apply: input.apply
-    }).pipe(Effect.provide(appLayer(repo, { model: input.model, dryRun: true, noTrace: input.noTrace, noCache: input.noCache })), handleErrors)
+      // The experiment traces itself into its own Phoenix project; our tracer
+      // would capture those task spans into the triage project instead.
+    }).pipe(Effect.provide(appLayer(repo, { model: input.model, dryRun: true, noTrace: true, noCache: input.noCache })), handleErrors)
   })
 ).pipe(Command.withDescription("Build a Phoenix dataset from your decisions + history, run a Jev experiment, report agreement; --apply writes what it learned into the repo profile"))
 
