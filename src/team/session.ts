@@ -11,6 +11,7 @@ import { Console, Effect } from "effect"
 import { GitHub } from "../github/GitHub.ts"
 import { type Repo, type TriageItem, repoSlug } from "../github/model.ts"
 import { Executor } from "../triage/executor.ts"
+import { FACTORY_LABEL } from "../triage/factory.ts"
 import { RepoProfiles, labelColors } from "../triage/profile.ts"
 import { bold, cyan, dim, green, red, yellow } from "../ui/ansi.ts"
 import { type Hotkey, hotkeyMenu } from "../ui/keys.ts"
@@ -35,7 +36,7 @@ export interface TeamOptions {
   readonly dryRun: boolean
 }
 
-type Choice = "open" | "take" | "nudge" | "done" | "skip" | "view" | "quit"
+type Choice = "open" | "take" | "factory" | "nudge" | "done" | "skip" | "view" | "quit"
 
 export const loadTeamQueue = Effect.fnUntraced(function*(options: TeamOptions) {
   const github = yield* GitHub
@@ -79,6 +80,9 @@ export const runTeam = Effect.fnUntraced(function*(options: TeamOptions) {
         idleHours: Math.round(t.ageHours),
         labels: t.item.labels,
         assignees: t.item.assignees,
+        factory: t.factory
+          ? { issue: t.factory.issue, reviewDepth: t.factory.depth, eligible: t.factory.fit?.eligible ?? null, lane: t.factory.fit?.lane ?? null, reasons: t.factory.fit?.reasons ?? [] }
+          : null,
         pr: t.item.pr ? { draft: t.item.pr.isDraft, checks: t.item.pr.checks, reviewDecision: t.item.pr.reviewDecision, requestedReviewers: t.item.pr.requestedReviewers, additions: t.item.pr.additions, deletions: t.item.pr.deletions } : null
       }))
     }, null, 2))
@@ -144,6 +148,15 @@ export const runTeam = Effect.fnUntraced(function*(options: TeamOptions) {
         index++
         continue
       }
+      case "factory": {
+        // Re-adding the label is how a maintainer starts (or restarts) a run.
+        yield* executor.submit(options.repo, t.item, { comment: null, labelsToAdd: [FACTORY_LABEL], labelsToRemove: [], assignees: [], reviewers: { users: [], teams: [] }, close: null })
+        yield* Console.log(`  ${green("↳")} +[${FACTORY_LABEL}] ${dim(`· the factory's ${t.factory?.fit?.lane ?? ""} lane picks it up and reports back on the issue`)}`)
+        yield* snooze(slug, t.item.number, t.item.updatedAt)
+        handled++
+        index++
+        continue
+      }
       case "nudge": {
         const body = nudgeComment(t, me)
         yield* Console.log(body.split("\n").map((l) => dim("  ┆ ") + l).join("\n"))
@@ -172,7 +185,10 @@ const keysFor = (t: TeamItem, me: string): Array<Hotkey<Choice>> => {
   } else if (!t.item.assignees.includes(me)) {
     keys.push({ key: "t", label: "take: assign me", value: "take" })
   }
-  if (t.waitingOn !== "you") keys.push({ key: "n", label: `nudge @${t.waitingOn === "author" ? t.item.author : t.waitingOn}`, value: "nudge" })
+  if ((t.bucket === "factory_candidate" || t.bucket === "factory_decision") && t.factory?.fit?.eligible) {
+    keys.push({ key: "F", label: t.bucket === "factory_candidate" ? "send to factory" : "re-run factory", value: "factory" })
+  }
+  if (t.waitingOn !== "you" && !t.bucket.startsWith("factory_")) keys.push({ key: "n", label: `nudge @${t.waitingOn === "author" ? t.item.author : t.waitingOn}`, value: "nudge" })
   keys.push({ key: "d", label: "done until it changes", value: "done" })
   keys.push({ key: "s", label: "skip", value: "skip" })
   keys.push({ key: "v", label: "view markdown", value: "view" })
@@ -204,7 +220,11 @@ const bucketBadge = (b: Bucket): string => {
       return red(bold(text))
     case "re_review":
     case "ci_failing":
+    case "factory_decision":
       return yellow(bold(text))
+    case "factory_review":
+    case "factory_candidate":
+      return green(bold(text))
     default:
       return cyan(bold(text))
   }

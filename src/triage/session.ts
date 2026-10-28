@@ -27,8 +27,9 @@ import { editText, openInBrowser } from "../ui/prompts.ts"
 import { renderAssessment, renderBody, renderHeader, renderReport } from "../ui/render.ts"
 import { appendDecision, makeDecision, readDecisions } from "./decisions.ts"
 import { Executor, type ResolvedPlan, describe } from "./executor.ts"
+import { FACTORY_LABEL, type FactoryFit, SIZE_LABELS, isSizeLabel } from "./factory.ts"
 import { isMaintainer, propagate } from "./links.ts"
-import { ACTION_TITLES, type ActionKind, type TriagePlan, suggestPlan } from "./plan.ts"
+import { ACTION_TITLES, type ActionKind, type TriagePlan, factoryFitFor, suggestPlan } from "./plan.ts"
 import { type RepoProfile, RepoProfiles, labelColors } from "./profile.ts"
 import { TRIAGE_LABEL, WORKFLOW_LABEL_ALIASES, type WorkflowLabelKey, workflowLabel } from "./roster.ts"
 import { CLOSE_TEMPLATES, NEEDS_INFO_TEMPLATES, type RepoLinks, type Template, renderTemplate, templatesFor } from "./templates.ts"
@@ -45,7 +46,7 @@ export interface SessionOptions {
   readonly links?: RepoLinks | undefined
 }
 
-type MenuChoice = { readonly _tag: "accept"; readonly assignee?: "me" | "choose" } | { readonly _tag: "action"; readonly action: ActionKind } | { readonly _tag: "open" } | { readonly _tag: "view" } | { readonly _tag: "quit" }
+type MenuChoice = { readonly _tag: "accept"; readonly assignee?: "me" | "choose" | "factory" } | { readonly _tag: "action"; readonly action: ActionKind } | { readonly _tag: "open" } | { readonly _tag: "view" } | { readonly _tag: "quit" }
 
 export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
   const github = yield* GitHub
@@ -242,7 +243,8 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
         assignees: outcome.plan.assignees,
         dryRun: options.dryRun,
         selfAssigned,
-        classifySpanId
+        classifySpanId,
+        factory: sendsToFactory(outcome.plan)
       })
     )
     // Human feedback lands on the classification span in Phoenix (fire-and-forget).
@@ -255,7 +257,8 @@ export const runSession = Effect.fnUntraced(function*(options: SessionOptions) {
           labels: outcome.plan.labelsToAdd,
           assignees: outcome.plan.assignees,
           selfAssigned,
-          triager: me
+          triager: me,
+          factory: sendsToFactory(outcome.plan)
         })
         .pipe(Effect.forkDetach)
     }
@@ -397,7 +400,7 @@ const triageOne = Effect.fnUntraced(function*(
   const suggested = plan && !plan.uncertain ? plan.action : null
   const assignable = plan !== null && ASSIGNABLE.has(plan.action)
   const choice = yield* hotkeyMenu<MenuChoice>({
-    keys: menuKeys(item, suggested, assignable, me),
+    keys: menuKeys(item, suggested, assignable, me, plan?.factory ?? null),
     defaultValue: suggested ? { _tag: "accept" } : undefined,
     render: (keys, def) => renderLegend(keys, def !== undefined, suggested)
   })
@@ -431,6 +434,14 @@ const triageOne = Effect.fnUntraced(function*(
     case "accept": {
       if (!plan || !assessment) return { _tag: "stay" } satisfies Outcome
       let assignee: string | null | undefined
+      if (choice.assignee === "factory") {
+        const resolved = yield* quickApply(item, plan, assessment, profile, null, options.links)
+        if (!resolved) return { _tag: "stay" } satisfies Outcome
+        const sent = toFactory(resolved, profile)
+        yield* Console.log(`  ${green("↳")} ${describe(sent)} ${dim(`· the factory's ${plan.factory?.lane ?? ""} lane picks it up`)}`)
+        yield* Effect.annotateCurrentSpan({ "triage.chosen": plan.action, "triage.accepted": true, "triage.factory": true, [SemanticConventions.OUTPUT_VALUE]: describe(sent) })
+        return yield* finish(plan.action, sent)
+      }
       if (choice.assignee === "me") {
         if (!me) {
           yield* Console.log(yellow("  could not determine your GitHub login"))
@@ -468,9 +479,9 @@ const runFlow = (action: ActionKind, item: TriageItem, plan: TriagePlan | null, 
     case "needs_info":
       return flowNeedsInfo(item, plan, profile, links)
     case "bug":
-      return flowBug(item, plan, profile)
+      return flowBug(item, plan, assessment, profile)
     case "feature":
-      return flowFeature(item, plan, profile)
+      return flowFeature(item, plan, assessment, profile)
     case "review":
       return flowReview(item, plan, profile)
     case "close":
@@ -487,12 +498,14 @@ const runFlow = (action: ActionKind, item: TriageItem, plan: TriagePlan | null, 
 /** Actions where "accept" involves a person (assignee or reviewer). */
 const ASSIGNABLE: ReadonlySet<ActionKind> = new Set<ActionKind>(["bug", "feature", "review"])
 
-const menuKeys = (item: TriageItem, suggested: ActionKind | null, assignable: boolean, me: string | null): Array<Hotkey<MenuChoice>> => {
+const menuKeys = (item: TriageItem, suggested: ActionKind | null, assignable: boolean, me: string | null, factory: FactoryFit | null): Array<Hotkey<MenuChoice>> => {
   const keys: Array<Hotkey<MenuChoice>> = []
   if (suggested && assignable) {
     if (me) keys.push({ key: "m", label: `accept, ${suggested === "review" ? "review by" : "assign"} @${me}`, value: { _tag: "accept", assignee: "me" } })
     keys.push({ key: "a", label: `accept, choose ${suggested === "review" ? "reviewer" : "assignee"}`, value: { _tag: "accept", assignee: "choose" } })
   }
+  // Shift+F; listed before `f` so the uppercase char wins the match.
+  if (suggested && factory?.eligible) keys.push({ key: "F", label: "accept, send to factory", value: { _tag: "accept", assignee: "factory" } })
   const add = (key: string, action: ActionKind) => keys.push({ key, label: ACTION_TITLES[action], value: { _tag: "action", action } })
   add("i", "needs_info")
   if (item.isPr) add("r", "review")
@@ -615,9 +628,37 @@ export const dedupe = (item: TriageItem, labels: ReadonlyArray<string | null>) =
   [...new Set(labels.filter((l): l is string => l !== null))].filter((l) => !item.labels.includes(l))
 export const removeTriage = (item: TriageItem) => (item.labels.includes(TRIAGE_LABEL) ? [TRIAGE_LABEL] : [])
 
+/**
+ * Hand the issue to Phoenix's factory instead of a person: add the trigger
+ * label, assign nobody (the factory refuses assigned issues), and drop
+ * scheduling labels, since the work starts now.
+ */
+export const toFactory = (resolved: ResolvedPlan, profile: RepoProfile): ResolvedPlan => {
+  const scheduling = [workflowLabel(profile, "backlog"), workflowLabel(profile, "roadmap")]
+  return {
+    ...resolved,
+    labelsToAdd: [...new Set([...resolved.labelsToAdd.filter((l) => !scheduling.includes(l)), FACTORY_LABEL])],
+    assignees: []
+  }
+}
+
+export const sendsToFactory = (resolved: ResolvedPlan): boolean => resolved.labelsToAdd.includes(FACTORY_LABEL)
+
+/** Fit of a resolved plan: the labels the issue ends up with, and who it is assigned to. */
+export const resolvedFit = (item: TriageItem, resolved: ResolvedPlan, assessment: Assessment | null, profile: RepoProfile): FactoryFit | null =>
+  factoryFitFor(
+    item,
+    [...item.labels.filter((l) => !resolved.labelsToRemove.includes(l)), ...resolved.labelsToAdd.filter((l) => l !== FACTORY_LABEL)],
+    [...item.assignees, ...resolved.assignees],
+    assessment,
+    profile
+  )
+
 const labelChoices = (item: TriageItem, profile: RepoProfile, preselected: ReadonlyArray<string>) => {
+  // Size labels belong to the PR bot, except size:S/M/L on an issue that has none yet.
+  const sizeOk = (l: string) => preselected.includes(l) || (item.kind === "issue" && !item.labels.some(isSizeLabel) && (SIZE_LABELS as ReadonlyArray<string>).includes(l))
   const all = [...new Set([...preselected, ...profile.labels.map((l) => l.name)])].filter(
-    (l) => l !== TRIAGE_LABEL && !item.labels.includes(l) && !/^size[:/]/i.test(l) && !/^autorelease/.test(l)
+    (l) => l !== TRIAGE_LABEL && l !== FACTORY_LABEL && !item.labels.includes(l) && (!isSizeLabel(l) || sizeOk(l)) && !/^autorelease/.test(l)
   )
   return all.map((l) => ({ title: l, value: l, selected: preselected.includes(l) }))
 }
@@ -625,8 +666,12 @@ const labelChoices = (item: TriageItem, profile: RepoProfile, preselected: Reado
 const pickLabels = (item: TriageItem, profile: RepoProfile, preselected: ReadonlyArray<string>) =>
   Prompt.MultiSelect<string>({ message: "Labels to add", choices: labelChoices(item, profile, preselected), maxPerPage: 14 })
 
-const pickPerson = (profile: RepoProfile, message: string, suggested: ReadonlyArray<string>, allowNone: boolean) => {
+/** pickPerson value meaning "send to the factory" (not a valid GitHub login). */
+const FACTORY_PICK = "🏭factory"
+
+const pickPerson = (profile: RepoProfile, message: string, suggested: ReadonlyArray<string>, allowNone: boolean, factory?: FactoryFit | null) => {
   const choices: Array<{ title: string; value: string; description?: string }> = []
+  if (factory?.eligible) choices.push({ title: `🏭 factory${factory.recommended ? " (recommended)" : ""}`, value: FACTORY_PICK, description: `unassigned + "${FACTORY_LABEL}": the ${factory.lane} lane opens a PR for review` })
   if (allowNone) choices.push({ title: dim("nobody (leave unassigned)"), value: "" })
   suggested.forEach((s, i) => choices.push(i === 0 ? { title: `@${s}`, value: s, description: "best match" } : { title: `@${s}`, value: s }))
   for (const t of profile.teammates) {
@@ -674,42 +719,42 @@ const flowNeedsInfo = Effect.fnUntraced(function*(item: TriageItem, plan: Triage
   return (yield* confirmPlan(resolved)) ? resolved : null
 })
 
-const flowBug = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
+const flowBug = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, assessment: Assessment | null, profile: RepoProfile) {
   const labels = yield* pickLabels(item, profile, plan?.labelsToAdd ?? dedupe(item, [workflowLabel(profile, "bug")]))
-  const owner = yield* pickPerson(profile, "Assign to", plan?.suggestedAssignees ?? [], true)
-  const resolved: ResolvedPlan = {
-    comment: null,
-    labelsToAdd: labels,
-    labelsToRemove: removeTriage(item),
-    assignees: owner ? [owner] : [],
-    reviewers: { users: [], teams: [] },
-    close: null
-  }
+  const unassigned: ResolvedPlan = { comment: null, labelsToAdd: labels, labelsToRemove: removeTriage(item), assignees: [], reviewers: { users: [], teams: [] }, close: null }
+  const owner = yield* pickPerson(profile, "Assign to", plan?.suggestedAssignees ?? [], true, resolvedFit(item, unassigned, assessment, profile))
+  const resolved: ResolvedPlan = owner === FACTORY_PICK ? toFactory(unassigned, profile) : { ...unassigned, assignees: owner ? [owner] : [] }
   return (yield* confirmPlan(resolved)) ? resolved : null
 })
 
-const flowFeature = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, profile: RepoProfile) {
+const flowFeature = Effect.fnUntraced(function*(item: TriageItem, plan: TriagePlan | null, assessment: Assessment | null, profile: RepoProfile) {
   const BACKLOG_LABEL = workflowLabel(profile, "backlog")
   const ROADMAP_LABEL = workflowLabel(profile, "roadmap")
-  const when = yield* Prompt.Select<"now" | "backlog" | "roadmap">({
+  // Judged on the suggested labels; re-checked below once the labels are picked.
+  const fit = factoryFitFor(item, [...item.labels, ...(plan?.labelsToAdd ?? [workflowLabel(profile, "enhancement") ?? "enhancement"])], item.assignees, assessment, profile)
+  const when = yield* Prompt.Select<"now" | "factory" | "backlog" | "roadmap">({
     message: "When should this be worked on?",
     choices: [
       { title: "Now", value: "now", description: "Assign an owner right away" },
+      ...(fit?.eligible ? [{ title: `Factory${fit.recommended ? " (recommended)" : ""}`, value: "factory" as const, description: `Now, by Phoenix's factory: add "${FACTORY_LABEL}", leave unassigned` }] : []),
       { title: "Backlog", value: "backlog", description: BACKLOG_LABEL ? `Add "${BACKLOG_LABEL}"; pick up when there is room` : "No backlog label in this repo; just leave unassigned" },
       { title: "Roadmap", value: "roadmap", description: ROADMAP_LABEL ? `Add "${ROADMAP_LABEL}"; needs planning / design` : "No roadmap label in this repo; just leave unassigned" }
     ]
   })
   const extra = when === "backlog" ? [BACKLOG_LABEL] : when === "roadmap" ? [ROADMAP_LABEL] : []
   const labels = yield* pickLabels(item, profile, dedupe(item, [...(plan?.labelsToAdd ?? [workflowLabel(profile, "enhancement")]), ...extra]))
-  const owner = yield* pickPerson(profile, when === "now" ? "Assign to" : "Assign to (optional)", plan?.suggestedAssignees ?? [], when !== "now")
-  const resolved: ResolvedPlan = {
-    comment: null,
-    labelsToAdd: labels,
-    labelsToRemove: removeTriage(item),
-    assignees: owner ? [owner] : [],
-    reviewers: { users: [], teams: [] },
-    close: null
+  const unassigned: ResolvedPlan = { comment: null, labelsToAdd: labels, labelsToRemove: removeTriage(item), assignees: [], reviewers: { users: [], teams: [] }, close: null }
+  if (when === "factory") {
+    const after = resolvedFit(item, unassigned, assessment, profile)
+    if (!after?.eligible) {
+      yield* Console.log(yellow(`  the factory would refuse it: ${after?.reasons.join("; ") ?? "no factory in this repo"}`))
+      return null
+    }
+    const resolved = toFactory(unassigned, profile)
+    return (yield* confirmPlan(resolved)) ? resolved : null
   }
+  const owner = yield* pickPerson(profile, when === "now" ? "Assign to" : "Assign to (optional)", plan?.suggestedAssignees ?? [], when !== "now")
+  const resolved: ResolvedPlan = { ...unassigned, assignees: owner ? [owner] : [] }
   return (yield* confirmPlan(resolved)) ? resolved : null
 })
 

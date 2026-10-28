@@ -63,6 +63,10 @@ export interface Assessment {
   readonly value: Scored | null
   /** PRs only: review risk. */
   readonly risk: Scored | null
+  /** Issues only: implementation effort (level indexes SIZE_LABELS). */
+  readonly effort?: Scored | null
+  /** Issues only: P(yes) that an agent can reproduce or probe it in a sandbox with no open product decision. */
+  readonly checkable?: number | null
   /** True when served from the on-disk cache. */
   readonly cached?: boolean
 }
@@ -87,7 +91,9 @@ const CachedAssessment = Schema.Struct({
   agentAuthored: Schema.Number,
   severity: ScoredSchema,
   value: ScoredSchema,
-  risk: ScoredSchema
+  risk: ScoredSchema,
+  effort: Schema.optional(ScoredSchema),
+  checkable: Schema.optional(Schema.NullOr(Schema.Number))
 })
 
 export class Classifier extends Context.Service<Classifier, {
@@ -159,7 +165,9 @@ export class Classifier extends Context.Service<Classifier, {
             agentAuthored: a.agent_authored.noul,
             severity: toScored(a.severity),
             value: toScored(a.value),
-            risk: null
+            risk: null,
+            effort: toScored(a.effort),
+            checkable: a.sandbox_checkable.noul
           } satisfies Assessment
         })
 
@@ -180,7 +188,7 @@ export class Classifier extends Context.Service<Classifier, {
             Effect.map((a): Assessment => {
               const withLevel = (sc: { readonly score: number; readonly confidence: number; readonly probabilities: ReadonlyArray<number>; readonly level?: number | undefined } | null) =>
                 sc ? { ...sc, level: sc.level ?? argmax(sc.probabilities) } : null
-              return { ...(a as unknown as Assessment), severity: withLevel(a.severity), value: withLevel(a.value), risk: withLevel(a.risk), latencyMs: 0, cached: true }
+              return { ...(a as unknown as Assessment), severity: withLevel(a.severity), value: withLevel(a.value), risk: withLevel(a.risk), effort: withLevel(a.effort ?? null), latencyMs: 0, cached: true }
             }),
             Effect.option
           )

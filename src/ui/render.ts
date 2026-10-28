@@ -1,5 +1,5 @@
 import type { Assessment, Scored } from "../classify/Classifier.ts"
-import { RISK_LEVELS, SEVERITY_LEVELS, THRESHOLDS, VALUE_LEVELS } from "../classify/questions.ts"
+import { EFFORT_LEVELS, RISK_LEVELS, SEVERITY_LEVELS, THRESHOLDS, VALUE_LEVELS } from "../classify/questions.ts"
 import type { TriageItem } from "../github/model.ts"
 import { ACTION_TITLES, type TriagePlan } from "../triage/plan.ts"
 import { isBot } from "../triage/roster.ts"
@@ -101,6 +101,8 @@ export const renderAssessment = (a: Assessment, plan: TriagePlan, colors: Record
   lines.push(...renderScored("severity", a.severity, SEVERITY_LEVELS))
   lines.push(...renderScored("value", a.value, VALUE_LEVELS))
   lines.push(...renderScored("risk", a.risk, RISK_LEVELS))
+  lines.push(...renderScored("effort", a.effort ?? null, EFFORT_LEVELS))
+  if (a.checkable !== undefined && a.checkable !== null) lines.push(`  ${"checkable".padEnd(12)} ${noulBar(a.checkable, THRESHOLDS.factoryCheckableAbove)} ${dim("reproducible or probeable in a sandbox, no open decision")}`)
   lines.push(hr(width))
   const title = plan.uncertain ? yellow(`suggest ${ACTION_TITLES[plan.action]} (uncertain)`) : green(`suggest ${ACTION_TITLES[plan.action]}`)
   lines.push(`  ${bold("→")} ${title}`)
@@ -108,6 +110,12 @@ export const renderAssessment = (a: Assessment, plan: TriagePlan, colors: Record
   const labels = plan.labelsToAdd.map((l) => chip(l, colors[l])).join(" ")
   if (labels) lines.push(`    ${dim("labels")} ${labels}`)
   if (plan.suggestedAssignees.length) lines.push(`    ${dim("owners")} ${plan.suggestedAssignees.slice(0, 4).map((a, i) => (i === 0 ? bold("@" + a) : dim("@" + a))).join(" ")}`)
+  const f = plan.factory
+  if (f) {
+    const head = f.recommended ? green(`🏭 ${f.lane} lane can take it`) : f.eligible ? yellow(`🏭 ${f.lane} lane would accept it`) : dim("🏭 not for the factory")
+    const why = f.reasons.length ? dim(` · ${f.reasons.join("; ")}`) : ""
+    lines.push(`    ${dim("factory")} ${head}${why}${f.candidate ? `  ${chip("factory-candidate", "0e8a16")}` : ""}`)
+  }
   return lines.join("\n")
 }
 

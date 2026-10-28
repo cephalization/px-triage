@@ -93,6 +93,33 @@ jev jev-1.13.0 · 412ms · 1830 tok
 | `f` | Feature | Add `enhancement`/`documentation` and component labels; choose now / backlog / roadmap; optionally assign |
 | `r` | Review (PRs) | Add type and component labels; request reviewers from the roster and CODEOWNERS; remove `triage` |
 | `c` | Close | Comment from a template, close as not planned, add `wontfix`/`duplicate`/`question`/… |
+| `F` | Accept, send to factory | Same labels as the suggested bug/feature, plus `factory`; assigns nobody (see [The factory](#the-factory)) |
+
+Bug and feature issues also get an effort label (`size:S`, `size:M`, `size:L`)
+when they have none. On issues these labels mean implementation effort, not
+the PR bot's line counts.
+
+### The factory
+
+In repositories with a `factory` label (Phoenix's
+[factory](https://github.com/Arize-ai/phoenix/blob/main/factory/README.md)),
+adding that label as a maintainer starts automated agents that take the issue
+to a PR ready for review. px-triage treats the factory as another possible
+owner:
+
+- Each bug or feature suggestion says whether the factory would accept it,
+  using the same checks as the factory's `dispatch.py` and its
+  factory-candidate policy: open, unassigned, typed, no open PR, not
+  `size:L`, `needs information`, auth or a label kept for people. It is
+  *recommended* when Jev also reads it as size S or M and checkable in a
+  sandbox (a failing test or probe, no live service, no open product
+  decision).
+- `F` accepts the suggestion and sends it to the factory. `b` offers the
+  factory as an assignee, and `f` offers it as a "when". Both are re-checked
+  against the labels you picked.
+- `pxt apply N --accept --factory` (or `--action bug|feature --factory`) does
+  the same for agents, and is refused when the factory would refuse it.
+- Decisions record `factory: true`, locally and on the Phoenix annotation.
 
 ### Linked items
 
@@ -130,9 +157,16 @@ days ago (default 14) are left out:
 | Teammate PR with failing checks | needs unblocking |
 | Assigned to you | issues and PRs on your plate, plus your own PRs when blocked on you |
 | Teammate issue with no owner | recent issue that needs an assignee |
+| Factory PR ready for review | a `factory/issue-N` PR out of draft with no review yet, with the review depth from its assessment comment |
+| Factory run waiting on a maintainer | the factory skipped the issue or stopped with outcome `manual`, and nobody has answered since |
+| Factory candidate to start | Phoenix's triage labeled it `factory-candidate`; `F` adds `factory` to start it |
+
+The factory buckets include items from anyone, since the factory's PRs come
+from its app and candidates often come from people without write access.
+Issues with a factory run underway leave the queue until it reports back.
 
 Keys: `Enter` opens in the browser, `t` takes it (request your review, or
-assign yourself), `n` posts a short nudge to whoever it is waiting on, `d`
+assign yourself), `F` sends a factory candidate to the factory or re-runs it, `n` posts a short nudge to whoever it is waiting on, `d`
 marks it done until it changes on GitHub, `s` skips, `v` pages the markdown.
 `--mine` narrows to your plate (review requests to you and your
 assignments); `--everyone` includes non-teammates; `--json` returns the same
@@ -262,6 +296,7 @@ choice; and `triage.apply` (CHAIN) with each GitHub mutation as a TOOL span.
 
 - `src/classify/questions.ts` — every Jev question and threshold. Review this file.
 - `src/triage/plan.ts` — answers → suggested action. `src/triage/links.ts` — propagation rules.
+- `src/triage/factory.ts` — what Phoenix's factory accepts, and how its comments are read. Keep in sync with `factory/dispatch.py`.
 - `src/triage/templates.ts` — comment wording. `src/triage/roster.ts` — label aliases and owner ranking.
 - `src/triage/session.ts` — the hotkey loop. `src/triage/profile.ts` — repo profile generation.
 - `src/github/GitHub.ts` — GraphQL fetch and REST mutations. `src/tracing.ts` — Phoenix export.

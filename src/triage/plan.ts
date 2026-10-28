@@ -5,8 +5,9 @@
 import type { Assessment } from "../classify/Classifier.ts"
 import { THRESHOLDS as DEFAULT_THRESHOLDS, type ComponentKey, type IssueCategory, type LanguageKey, type PrCategory } from "../classify/questions.ts"
 import type { TriageItem } from "../github/model.ts"
+import { type FactoryFit, SIZE_LABELS, factoryEnabled, factoryFit, isSizeLabel } from "./factory.ts"
 import type { RepoProfile } from "./profile.ts"
-import { TRIAGE_LABEL, codeownerTeamsFor, priorityLabel, rankTeammates, workflowLabel } from "./roster.ts"
+import { TRIAGE_LABEL, codeownerTeamsFor, priorityLabel, rankTeammates, resolveLabel, workflowLabel } from "./roster.ts"
 
 export type ActionKind = "needs_info" | "bug" | "feature" | "review" | "close" | "skip"
 
@@ -22,6 +23,10 @@ export interface TriagePlan {
   readonly suggestedReviewers: { readonly users: ReadonlyArray<string>; readonly teams: ReadonlyArray<string> }
   readonly component: ComponentKey
   readonly language: LanguageKey
+  /** Size label the plan adds (issues without one), already in `labelsToAdd`. */
+  readonly size?: string | null
+  /** Whether the issue can go to Phoenix's factory instead of a person; null where there is no factory. */
+  readonly factory?: FactoryFit | null
 }
 
 const isIssueCategory = (c: string): c is IssueCategory =>
@@ -38,10 +43,39 @@ export const suggestPlan = (item: TriageItem, a: Assessment, profile: RepoProfil
   // Learned policy: when humans consistently chose a different action for this
   // (kind, category), follow them. Confidence gating still applies.
   const learnedAction = profile.learned?.policy[`${item.kind}:${a.category.choice}`] as ActionKind | undefined
-  if (learnedAction && learnedAction !== base0.action && learnedAction !== "skip") {
-    return { ...base0, action: learnedAction, rationale: [...base0.rationale, `learned: maintainers usually choose "${learnedAction}" for ${a.category.choice}`] }
-  }
-  return base0
+  const chosen = learnedAction && learnedAction !== base0.action && learnedAction !== "skip"
+    ? { ...base0, action: learnedAction, rationale: [...base0.rationale, `learned: maintainers usually choose "${learnedAction}" for ${a.category.choice}`] }
+    : base0
+  return withFactory(item, a, profile, THRESHOLDS, chosen)
+}
+
+/** Size label from Jev's effort read, when the issue has none and the read is confident. */
+export const sizeLabelFor = (item: TriageItem, a: Assessment, profile: RepoProfile, floor: number = DEFAULT_THRESHOLDS.effortConfidenceFloor): string | null => {
+  if (item.kind !== "issue" || item.labels.some(isSizeLabel) || !a.effort || a.effort.confidence < floor) return null
+  // The expected level, not the argmax: an even S/M split rounds up to M, the honest size.
+  const name = SIZE_LABELS[Math.min(Math.max(Math.round(a.effort.score), 0), SIZE_LABELS.length - 1)]!
+  return resolveLabel(profile, [name])
+}
+
+/**
+ * Factory fit for an issue after a triage step that leaves it with `labels`
+ * and `assignees`. Null when the repo has no factory.
+ */
+export const factoryFitFor = (item: TriageItem, labels: ReadonlyArray<string>, assignees: ReadonlyArray<string>, a: Assessment | null, profile: RepoProfile, checkableAbove: number = DEFAULT_THRESHOLDS.factoryCheckableAbove): FactoryFit | null =>
+  item.kind === "issue" && factoryEnabled(profile)
+    ? factoryFit({ item, labels, assigned: assignees.length > 0, component: a?.component.choice ?? null, checkable: a?.checkable ?? null, checkableAbove })
+    : null
+
+const withFactory = (item: TriageItem, a: Assessment, profile: RepoProfile, t: Thresholds, plan: TriagePlan): TriagePlan => {
+  if (plan.action !== "bug" && plan.action !== "feature") return { ...plan, factory: null }
+  const size = sizeLabelFor(item, a, profile, t.effortConfidenceFloor)
+  const labelsToAdd = size && !plan.labelsToAdd.includes(size) ? [...plan.labelsToAdd, size] : plan.labelsToAdd
+  const after = [...item.labels.filter((l) => !plan.labelsToRemove.includes(l)), ...labelsToAdd]
+  // The factory path assigns nobody, so only existing assignees count against it.
+  const factory = factoryFitFor(item, after, item.assignees, a, profile, t.factoryCheckableAbove)
+  const rationale = [...plan.rationale]
+  if (size) rationale.push(`effort reads as ${size}`)
+  return { ...plan, labelsToAdd, rationale, size, factory }
 }
 
 const suggestPlanWith = (item: TriageItem, a: Assessment, profile: RepoProfile, THRESHOLDS: Thresholds): TriagePlan => {

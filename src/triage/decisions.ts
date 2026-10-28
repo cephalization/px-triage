@@ -32,7 +32,9 @@ export const Decision = Schema.Struct({
   /** OpenTelemetry span id of the triage.classify span, for Phoenix annotations. */
   classifySpanId: Schema.optional(Schema.String),
   /** Who decided: a GitHub login for humans in the TUI, or "agent:<name>" for non-interactive use. */
-  actor: Schema.optional(Schema.String)
+  actor: Schema.optional(Schema.String),
+  /** True when the issue went to Phoenix's factory instead of a person. */
+  factory: Schema.optional(Schema.Boolean)
 })
 export type Decision = typeof Decision.Type
 
@@ -48,6 +50,7 @@ export const makeDecision = (input: {
   selfAssigned?: boolean
   classifySpanId?: string | undefined
   actor?: string | undefined
+  factory?: boolean | undefined
 }): Decision => ({
   ts: new Date().toISOString(),
   repo: input.repo,
@@ -68,7 +71,8 @@ export const makeDecision = (input: {
   dryRun: input.dryRun,
   ...(input.selfAssigned !== undefined ? { selfAssigned: input.selfAssigned } : {}),
   ...(input.classifySpanId !== undefined ? { classifySpanId: input.classifySpanId } : {}),
-  ...(input.actor !== undefined ? { actor: input.actor } : {})
+  ...(input.actor !== undefined ? { actor: input.actor } : {}),
+  ...(input.factory ? { factory: true } : {})
 })
 
 export const appendDecision = (decision: Decision) =>

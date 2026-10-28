@@ -82,3 +82,28 @@ describe("bucketTeamItems", () => {
     expect(classifyTeamItem(base({ createdAt: "2026-09-01T00:00:00Z" }), profile, { ...o, windowDays: 60 })?.bucket).toBe("needs_owner")
   })
 })
+
+describe("factory buckets", () => {
+  const fp: RepoProfile = { ...profile, labels: ["factory", "factory-candidate", "bug"].map((name) => ({ name, color: "aaaaaa", description: null })) }
+  const report = (outcome: string, at = "2026-10-06T00:00:00Z") => ({ author: "arize-phoenix-factory[bot]", body: `🏭 The factory's **bug** session x stopped.\n\nOutcome: **${outcome}** · rubric: \`satisfied\``, createdAt: at })
+
+  it("surfaces factory PRs out of draft, whoever opened them", () => {
+    const t = classifyTeamItem(pr({ headRefName: "factory/issue-42" }, { author: "arize-phoenix-factory[bot]", authorAssociation: "NONE", comments: [{ author: "arize-phoenix-factory[bot]", body: "**Review depth:** focused, because", createdAt: "2026-10-06T00:00:00Z" }] }), fp, o)
+    expect(t).toMatchObject({ bucket: "factory_review", factory: { issue: 42, depth: "focused" } })
+    expect(classifyTeamItem(pr({ headRefName: "factory/issue-42", isDraft: true }), fp, o)).toBeNull()
+  })
+  it("offers candidates from outsiders, and hides issues with a run underway", () => {
+    const candidate = classifyTeamItem(base({ author: "stranger", authorAssociation: "NONE", labels: ["factory-candidate", "bug"], createdAt: "2026-01-01T00:00:00Z" }), fp, o)
+    expect(candidate).toMatchObject({ bucket: "factory_candidate", factory: { fit: { eligible: true, lane: "bug" } } })
+    expect(classifyTeamItem(base({ labels: ["factory", "bug"] }), fp, o)).toBeNull()
+  })
+  it("asks for a maintainer after a manual outcome until someone answers", () => {
+    expect(classifyTeamItem(base({ author: "stranger", authorAssociation: "NONE", labels: ["bug"], comments: [report("manual")] }), fp, o)?.bucket).toBe("factory_decision")
+    const answered = [report("manual"), { author: "alice", body: "go with option A", createdAt: "2026-10-06T06:00:00Z" }]
+    expect(classifyTeamItem(base({ labels: ["bug"], comments: answered }), fp, o)?.bucket).toBe("needs_owner")
+    expect(classifyTeamItem(base({ author: "stranger", authorAssociation: "NONE", labels: ["bug"], comments: [report("success")] }), fp, o)).toBeNull()
+  })
+  it("leaves repos without a factory alone", () => {
+    expect(classifyTeamItem(pr({ headRefName: "factory/issue-42" }), profile, o)?.bucket).toBe("needs_review")
+  })
+})

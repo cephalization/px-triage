@@ -213,3 +213,36 @@ describe("score levels", () => {
     expect(plan.rationale.join(" ")).toContain("severity level 0")
   })
 })
+
+describe("suggestPlan (factory and size)", () => {
+  const factoryProfile: RepoProfile = { ...profile, labels: [...profile.labels, ...["factory", "size:S", "size:M", "size:L"].map(label)] }
+  const effort = (level: number, confidence = 0.8) => ({ score: level, level, confidence, probabilities: [0, 1, 2].map((i) => (i === level ? confidence : (1 - confidence) / 2)) })
+
+  it("adds a size label from the effort read when the issue has none", () => {
+    const plan = suggestPlan(item(), assessment({ effort: effort(0) }), factoryProfile)
+    expect(plan.size).toBe("size:S")
+    expect(plan.labelsToAdd).toContain("size:S")
+    expect(suggestPlan(item({ labels: ["triage", "size:M"] }), assessment({ effort: effort(0) }), factoryProfile).size).toBeNull()
+    expect(suggestPlan(item(), assessment({ effort: effort(0, 0.1) }), factoryProfile).size).toBeNull()
+  })
+
+  it("rounds an even S/M split up to M", () => {
+    const split = { score: 0.53, level: 0, confidence: 0.2, probabilities: [0.49, 0.49, 0.02] }
+    expect(suggestPlan(item(), assessment({ effort: split }), factoryProfile).size).toBe("size:M")
+  })
+
+  it("recommends the factory for a small checkable bug", () => {
+    const plan = suggestPlan(item(), assessment({ effort: effort(1), checkable: 0.9 }), factoryProfile)
+    expect(plan.factory).toMatchObject({ eligible: true, recommended: true, lane: "bug" })
+  })
+
+  it("judges the labels the plan leaves, so a size:L read rules it out", () => {
+    const plan = suggestPlan(item(), assessment({ effort: effort(2), checkable: 0.9 }), factoryProfile)
+    expect(plan.factory?.eligible).toBe(false)
+  })
+
+  it("has no factory opinion where the repo has no factory or the action is not bug/feature", () => {
+    expect(suggestPlan(item(), assessment({ effort: effort(0), checkable: 0.9 }), profile).factory).toBeNull()
+    expect(suggestPlan(item(), assessment({ complete: 0.1 }), factoryProfile).factory).toBeNull()
+  })
+})

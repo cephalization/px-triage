@@ -95,6 +95,13 @@ export const VALUE_LEVELS = [
   "Broadly valuable or strategically important; unblocks common workflows or many users."
 ] as const
 
+/** Implementation effort for an issue; index = position in SIZE_LABELS (size:S, size:M, size:L). */
+export const EFFORT_LEVELS = [
+  "Easy: one file, an obvious fix, no design latitude.",
+  "Medium: a few files in one module, following an existing pattern.",
+  "Hard: several files or more than one subsystem (server, web UI, a client SDK, docs), or real design choices to make."
+] as const
+
 export const RISK_LEVELS = [
   "Small, isolated change with tests or obvious correctness; easy to review.",
   "Moderate change touching shared logic, UI state, or multiple files; needs careful review.",
@@ -147,6 +154,17 @@ export const makeIssueQuestions = (context: string) => ({
   value: score(
     "If this issue is a feature request or documentation request, how valuable would fulfilling it be to the project's users in general? If it is not a request, pick the lowest level.",
     VALUE_LEVELS
+  ),
+  effort: score(
+    "How much implementation effort would resolving this issue take for someone who knows the codebase? Work that spans more than one subsystem is harder than its size suggests: count each extra subsystem as one level up.",
+    EFFORT_LEVELS
+  ),
+  sandbox_checkable: noul(
+    "Could a coding agent with only the repository checked out (dependencies installed, no live LLM provider keys, no third-party services, no customer deployment, no one to ask) show the problem before changing anything: a test that fails for the reported reason, or a probe showing the requested behavior is missing? Answer no when it first needs a product or design decision, such as choosing between approaches, naming a public API, or changing a default.",
+    {
+      true: "The inputs and expected result are concrete enough to reproduce or probe in a sandbox, and no product decision is open.",
+      false: "It needs a live service, a specific deployment, hardware, or a decision a maintainer has to make first."
+    }
   )
 })
 
@@ -190,7 +208,11 @@ export const THRESHOLDS = {
   /** Show the "agent-authored" badge above this probability. */
   agentAuthoredAbove: 0.7,
   /** Only add a priority label when the severity score is at least this confident. */
-  severityConfidenceFloor: 0.35
+  severityConfidenceFloor: 0.35,
+  /** Only add a size label when the effort score is at least this confident. Effort reads are rarely peaked; ~0.2 is a clear two-way split. */
+  effortConfidenceFloor: 0.15,
+  /** `sandbox_checkable` noul at or above this -> recommend sending an eligible issue to the factory. */
+  factoryCheckableAbove: 0.6
 } as const
 
 /** Max characters of body / comment text sent as state (keeps us well under the 32k-token state budget). */
