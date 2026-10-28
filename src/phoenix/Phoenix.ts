@@ -53,6 +53,8 @@ export interface HumanFeedback {
   readonly triager: string | null
   /** HUMAN for the interactive TUI; LLM when an agent drove the decision. */
   readonly annotatorKind?: "HUMAN" | "LLM"
+  /** Sent to Phoenix's factory instead of a person. */
+  readonly factory?: boolean
 }
 
 /** A human decision read back from Phoenix (the shared source of truth). */
@@ -119,7 +121,7 @@ export class Phoenix extends Context.Service<Phoenix, {
               label: f.chosen,
               score: f.accepted ? 1 : 0,
               explanation: f.suggested ? `suggested ${f.suggested}, chose ${f.chosen}` : `no suggestion, chose ${f.chosen}`,
-              metadata: { suggested: f.suggested, labels: [...f.labels], assignees: [...f.assignees], selfAssigned: f.selfAssigned, triager: f.triager }
+              metadata: { suggested: f.suggested, labels: [...f.labels], assignees: [...f.assignees], selfAssigned: f.selfAssigned, triager: f.triager, factory: f.factory ?? false }
             }
           })
         ).pipe(Effect.ignore)

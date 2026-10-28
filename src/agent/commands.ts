@@ -7,6 +7,7 @@ import { type Repo, repoSlug } from "../github/model.ts"
 import { bold, cyan, dim, green, red, yellow } from "../ui/ansi.ts"
 import { renderAssessment, renderBody, renderHeader } from "../ui/render.ts"
 import { labelColors } from "../triage/profile.ts"
+import { sendsToFactory } from "../triage/session.ts"
 import {
   type AgentContext,
   type ApplyFlags,
@@ -67,7 +68,7 @@ export const runShow = Effect.fnUntraced(function*(ctx: AgentContext, number: nu
       if (l.assessment && l.plan) yield* Console.log(renderAssessment(l.assessment, l.plan, colors))
       else if (l.error) yield* Console.log(red(`classifier failed: ${l.error}`))
       yield* Console.log(bold("\nCommands"))
-      for (const [k, v] of Object.entries(commandsFor(l, ctx))) yield* Console.log(`  ${k.padEnd(11)} ${dim(v)}`)
+      for (const [k, v] of Object.entries(commandsFor(l, ctx))) yield* Console.log(`  ${k.padEnd(14)} ${dim(v)}`)
     })
   )
 })
@@ -109,6 +110,7 @@ export const runApply = Effect.fnUntraced(function*(ctx: AgentContext, number: n
     suggested: l.plan?.action ?? null,
     dryRun: flags.dryRun,
     actor: ctx.actor,
+    factory: resolved ? sendsToFactory(resolved) : false,
     applied: resolved ? planJson(resolved) : null,
     propagations: propagations.map(propagationJson),
     results: reports.map((r) => ({ number: r.item.number, ok: r.ok, summary: r.summary, error: r.error ?? null }))

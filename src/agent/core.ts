@@ -16,7 +16,8 @@ import { isMaintainer, propagate } from "../triage/links.ts"
 import { ACTION_TITLES, type ActionKind, type TriagePlan, suggestPlan } from "../triage/plan.ts"
 import { type RepoProfile, RepoProfiles } from "../triage/profile.ts"
 import { TRIAGE_LABEL, workflowLabel } from "../triage/roster.ts"
-import { dedupe, pickDefaultTemplate, quickApply, reconcileQueue, removeTriage, syncLearned, templateLabels } from "../triage/session.ts"
+import type { FactoryFit } from "../triage/factory.ts"
+import { dedupe, pickDefaultTemplate, quickApply, reconcileQueue, removeTriage, resolvedFit, sendsToFactory, syncLearned, templateLabels, toFactory } from "../triage/session.ts"
 import { CLOSE_TEMPLATES, NEEDS_INFO_TEMPLATES, type RepoLinks, type Template, renderTemplate, templatesFor } from "../triage/templates.ts"
 
 export const SCHEMA = 1
@@ -122,12 +123,19 @@ export const suggestionJson = (l: Loaded) =>
       severity: l.assessment.severity?.level ?? null,
       value: l.assessment.value?.level ?? null,
       risk: l.assessment.risk?.level ?? null,
+      effort: l.assessment.effort?.level ?? null,
+      checkable: l.assessment.checkable == null ? null : round(l.assessment.checkable),
       rationale: l.plan.rationale,
       labels: l.plan.labelsToAdd,
+      size: l.plan.size ?? null,
       owners: l.plan.suggestedAssignees.slice(0, 5),
-      reviewers: l.plan.suggestedReviewers
+      reviewers: l.plan.suggestedReviewers,
+      factory: factoryJson(l.plan.factory ?? null)
     }
     : null
+
+export const factoryJson = (f: FactoryFit | null) =>
+  f ? { eligible: f.eligible, recommended: f.recommended, lane: f.lane, reasons: f.reasons, candidate: f.candidate } : null
 
 export const itemSummaryJson = (l: Loaded, profile: RepoProfile) => ({
   number: l.item.number,
@@ -167,7 +175,9 @@ export const itemDetailJson = (l: Loaded, profile: RepoProfile, ctx: AgentContex
         agentAuthored: l.assessment.agentAuthored,
         severity: l.assessment.severity,
         value: l.assessment.value,
-        risk: l.assessment.risk
+        risk: l.assessment.risk,
+        effort: l.assessment.effort ?? null,
+        checkable: l.assessment.checkable ?? null
       }
       : null,
     acceptPreview: preview ? { ...planJson(preview), propagations: propagate(l.item, l.plan!.action, preview, profile).map(propagationJson) } : null,
@@ -200,12 +210,14 @@ export const commandsFor = (l: Loaded, ctx: AgentContext) => {
   const base = `pxt apply ${n} --repo ${repoSlug(ctx.repo)} --json`
   const cmds: Record<string, string> = {}
   if (l.plan && !l.plan.uncertain) cmds["accept"] = `${base} --accept`
+  if (l.plan && !l.plan.uncertain && l.plan.factory?.eligible) cmds["accept_factory"] = `${base} --accept --factory`
   cmds["needs_info"] = `${base} --action needs-info --template <${templatesFor(NEEDS_INFO_TEMPLATES, l.item.kind).map((t) => t.id).join("|")}> [--comment "..."]`
   if (l.item.kind === "issue") {
-    cmds["bug"] = `${base} --action bug [--assign <login>|--assign-me] [--label <name>]...`
+    cmds["bug"] = `${base} --action bug [--assign <login>|--assign-me] [--add-label <name>]...`
     cmds["feature"] = `${base} --action feature [--when now|backlog|roadmap] [--assign <login>]`
+    if (l.plan?.factory?.eligible) cmds["factory"] = `${base} --action <bug|feature> --factory [--add-label size:S|size:M]`
   } else {
-    cmds["review"] = `${base} --action review [--reviewer <login>]... [--label <name>]...`
+    cmds["review"] = `${base} --action review [--reviewer <login>]... [--add-label <name>]...`
   }
   cmds["close"] = `${base} --action close --template <${templatesFor(CLOSE_TEMPLATES, l.item.kind).map((t) => t.id).join("|")}> [--comment "..."]`
   cmds["skip"] = `${base} --action skip`
@@ -228,6 +240,8 @@ export interface ApplyFlags {
   readonly reviewers: ReadonlyArray<string>
   readonly labels: ReadonlyArray<string>
   readonly when: "now" | "backlog" | "roadmap" | null
+  /** Hand a bug/feature issue to Phoenix's factory instead of a person. */
+  readonly factory: boolean
   readonly template: string | null
   readonly comment: string | null
   readonly propagateLinks: boolean
@@ -251,6 +265,10 @@ export const resolveFromFlags = Effect.fnUntraced(function*(l: Loaded, flags: Ap
 
   const assignee: string | null | undefined = flags.assignMe ? (me ?? undefined) : flags.assign !== null ? flags.assign : undefined
   if (flags.assignMe && !me) return yield* Effect.fail(new ApplyError("--assign-me needs an authenticated GitHub user"))
+  if (flags.factory) {
+    if (action !== "bug" && action !== "feature") return yield* Effect.fail(new ApplyError(`--factory goes with bug or feature, not "${action}"`))
+    if (flags.assignMe || flags.assign !== null) return yield* Effect.fail(new ApplyError("--factory assigns nobody (the factory refuses assigned issues); drop --assign / --assign-me"))
+  }
 
   let resolved: ResolvedPlan
   if (flags.accept && l.plan && l.assessment) {
@@ -264,6 +282,14 @@ export const resolveFromFlags = Effect.fnUntraced(function*(l: Loaded, flags: Ap
   if (flags.labels.length) resolved = { ...resolved, labelsToAdd: dedupe(item, [...resolved.labelsToAdd, ...flags.labels]) }
   if (flags.reviewers.length) resolved = { ...resolved, reviewers: { users: [...new Set([...resolved.reviewers.users, ...flags.reviewers])], teams: resolved.reviewers.teams } }
   if (flags.comment !== null && !resolved.comment && (action === "bug" || action === "feature" || action === "review")) resolved = { ...resolved, comment: flags.comment }
+  if (flags.factory) {
+    const unassigned = { ...resolved, assignees: [] }
+    const fit = resolvedFit(item, unassigned, l.assessment, profile)
+    // No --force here: dispatch.py would refuse it anyway, after a comment and a wasted run.
+    if (!fit) return yield* Effect.fail(new ApplyError(`${profile.repo} has no "factory" label, so there is no factory to send it to`))
+    if (!fit.eligible) return yield* Effect.fail(new ApplyError(`the factory would refuse #${item.number}: ${fit.reasons.join("; ")}`))
+    resolved = toFactory(unassigned, profile)
+  }
   const propagations = flags.propagateLinks ? propagate(item, action, resolved, profile) : []
   return { action, resolved: { ...resolved, propagations } as ResolvedPlan }
 })
@@ -331,7 +357,8 @@ export const executePlan = Effect.fnUntraced(function*(l: Loaded, action: Action
       dryRun,
       selfAssigned,
       classifySpanId: l.classifySpanId,
-      actor: ctx.actor
+      actor: ctx.actor,
+      factory: resolved ? sendsToFactory(resolved) : false
     })
   )
   if (l.classifySpanId && !dryRun) {
@@ -343,7 +370,8 @@ export const executePlan = Effect.fnUntraced(function*(l: Loaded, action: Action
       assignees: resolved?.assignees ?? [],
       selfAssigned,
       triager: ctx.actor,
-      annotatorKind: ctx.actor.startsWith("agent:") ? "LLM" : "HUMAN"
+      annotatorKind: ctx.actor.startsWith("agent:") ? "LLM" : "HUMAN",
+      factory: resolved ? sendsToFactory(resolved) : false
     })
   }
   if (!resolved) return []

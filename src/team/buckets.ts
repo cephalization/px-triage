@@ -9,19 +9,59 @@
  *   needs_review      teammate PR with no approval and nobody reviewing
  *   ready_to_merge    approved, checks green, not merged
  *   ci_failing        teammate PR with failing checks
+ *   factory_review    a factory PR out of draft that nobody has reviewed yet
  *   mine              assigned to you (issue or PR), most recently active first
+ *   factory_decision  the factory stopped or skipped an issue and no one has answered
+ *   factory_candidate triage nominated it for the factory; a maintainer has to start it
  *   needs_owner       teammate issue with no assignee, opened within the window
+ *
+ * Factory buckets ignore who wrote the item: the factory's PRs come from its
+ * app, and candidates most often come from people without write access.
  */
 import type { TriageItem } from "../github/model.ts"
+import {
+  FACTORY_CANDIDATE_LABEL,
+  FACTORY_LABEL,
+  type FactoryFit,
+  type ReviewDepth,
+  factoryEnabled,
+  factoryFit,
+  factoryIssueOf,
+  factoryStatus,
+  humanRepliedSince,
+  reviewDepth
+} from "../triage/factory.ts"
 import { isMaintainer } from "../triage/links.ts"
 import type { RepoProfile } from "../triage/profile.ts"
+import { isBot } from "../triage/roster.ts"
 
-export type Bucket = "review_requested" | "mine" | "re_review" | "needs_review" | "ready_to_merge" | "ci_failing" | "needs_owner"
+export type Bucket =
+  | "review_requested"
+  | "mine"
+  | "re_review"
+  | "factory_review"
+  | "needs_review"
+  | "ready_to_merge"
+  | "ci_failing"
+  | "factory_decision"
+  | "factory_candidate"
+  | "needs_owner"
 
-export const BUCKET_ORDER: ReadonlyArray<Bucket> = ["review_requested", "re_review", "needs_review", "ready_to_merge", "ci_failing", "mine", "needs_owner"]
+export const BUCKET_ORDER: ReadonlyArray<Bucket> = [
+  "review_requested",
+  "re_review",
+  "factory_review",
+  "needs_review",
+  "ready_to_merge",
+  "ci_failing",
+  "mine",
+  "factory_decision",
+  "factory_candidate",
+  "needs_owner"
+]
 
-/** Review buckets: longest-waiting first. Your plate and unowned issues: most recent activity first. */
-const OLDEST_FIRST: ReadonlySet<Bucket> = new Set<Bucket>(["review_requested", "re_review", "needs_review", "ready_to_merge", "ci_failing"])
+/** Review buckets and the factory's waiting work: longest-waiting first. Your plate and unowned issues: most recent activity first. */
+const OLDEST_FIRST: ReadonlySet<Bucket> = new Set<Bucket>(["review_requested", "re_review", "factory_review", "needs_review", "ready_to_merge", "ci_failing", "factory_decision", "factory_candidate"])
 
 export const BUCKET_TITLES: Record<Bucket, string> = {
   review_requested: "Review requested from you",
@@ -30,7 +70,10 @@ export const BUCKET_TITLES: Record<Bucket, string> = {
   needs_review: "Teammate PR waiting for a reviewer",
   ready_to_merge: "Approved and green, not merged",
   ci_failing: "Teammate PR with failing checks",
-  needs_owner: "Teammate issue with no owner"
+  needs_owner: "Teammate issue with no owner",
+  factory_review: "Factory PR ready for review",
+  factory_decision: "Factory run waiting on a maintainer",
+  factory_candidate: "Factory candidate to start"
 }
 
 export interface TeamItem {
@@ -41,6 +84,8 @@ export interface TeamItem {
   /** Who the next move belongs to: you, the author, or another reviewer. */
   readonly waitingOn: "you" | "author" | string
   readonly ageHours: number
+  /** Factory buckets: what the factory needs, and whether it would take the issue now. */
+  readonly factory?: { readonly issue: number; readonly depth: ReviewDepth | null; readonly fit: FactoryFit | null }
 }
 
 export interface BucketOptions {
@@ -57,6 +102,8 @@ const hours = (iso: string, now: Date) => Math.max(0, (now.getTime() - new Date(
 
 export const classifyTeamItem = (item: TriageItem, profile: RepoProfile, o: BucketOptions): TeamItem | null => {
   const now = o.now ?? new Date()
+  const factory = factoryEnabled(profile) && item.state === "OPEN" && !item.labels.includes(o.queueLabel) ? classifyFactoryItem(item, o, now) : undefined
+  if (factory !== undefined) return factory
   const teammate = isMaintainer(profile, item.author, item.authorAssociation)
   if (!teammate && !o.everyone && !item.assignees.includes(o.me)) return null
   if (item.labels.includes(o.queueLabel)) return null // still in the triage queue; pxt handles it
@@ -108,6 +155,42 @@ export const classifyTeamItem = (item: TriageItem, profile: RepoProfile, o: Buck
     return mk("needs_owner", `opened by @${item.author}; nobody owns it`, "you")
   }
   return null
+}
+
+/**
+ * The factory's waiting work, or `null` when the factory owns the item right
+ * now, or `undefined` to fall through to the normal buckets.
+ */
+const classifyFactoryItem = (item: TriageItem, o: BucketOptions, now: Date): TeamItem | null | undefined => {
+  const age = hours(item.updatedAt, now)
+  if (item.kind === "pull_request" && item.pr) {
+    const issue = factoryIssueOf(item)
+    if (issue === null) return undefined
+    if (item.pr.isDraft) return null // the factory is still working: CI and automated review run before it leaves draft
+    if (item.author === o.me || item.pr.reviews.some((r) => r.state === "APPROVED" || r.state === "CHANGES_REQUESTED")) return undefined
+    const depth = reviewDepth(item.comments)
+    return {
+      item,
+      bucket: "factory_review",
+      why: `the factory's PR for #${issue} ${item.pr.checks === "FAILURE" || item.pr.checks === "ERROR" ? "is out of draft but checks are failing" : "passed CI and automated review"}${depth ? `; review depth: ${depth}` : ""}`,
+      waitingOn: "you",
+      ageHours: age,
+      factory: { issue, depth, fit: null }
+    }
+  }
+  if (item.kind !== "issue") return undefined
+  if (item.labels.includes(FACTORY_LABEL)) return null // a run is underway
+  const status = factoryStatus(item.comments)
+  const fit = factoryFit({ item, labels: item.labels, assigned: item.assignees.length > 0, component: null, checkable: null, checkableAbove: 0 })
+  const mk = (bucket: Bucket, why: string): TeamItem => ({ item, bucket, why, waitingOn: "you", ageHours: age, factory: { issue: item.number, depth: null, fit } })
+  if (status && status._tag !== "started" && !humanRepliedSince(item.comments, status.at, isBot)) {
+    if (status._tag === "skipped") return mk("factory_decision", `the factory skipped it: ${status.reason}`)
+    if (status.outcome === "manual") return mk("factory_decision", "the factory stopped for a decision (manual): answer its questions, then re-add the factory label")
+  }
+  if (item.labels.includes(FACTORY_CANDIDATE_LABEL) && status === null && item.assignees.length === 0) {
+    return mk("factory_candidate", fit.eligible ? `triage nominated it for the ${fit.lane} lane; adding "${FACTORY_LABEL}" starts it` : `nominated, but the factory would refuse it: ${fit.reasons.join("; ")}`)
+  }
+  return undefined
 }
 
 export const bucketTeamItems = (items: ReadonlyArray<TriageItem>, profile: RepoProfile, o: BucketOptions): Array<TeamItem> =>

@@ -8,6 +8,7 @@ import { OpenInferenceSpanKind, SemanticConventions } from "@arizeai/openinferen
 import { Config, Context, Effect, Layer, Schedule, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { FACTORY_CANDIDATE_LABEL, FACTORY_LABEL } from "../triage/factory.ts"
 import { type Repo, RepoLabel, TriageItem, repoSlug } from "./model.ts"
 
 export class GitHubError extends Schema.TaggedError<GitHubError>()("GitHubError", {
@@ -199,17 +200,19 @@ export class GitHub extends Context.Service<GitHub, {
 
       const fetchTeamItems = Effect.fnUntraced(function*(repo: Repo, me: string, limit: number) {
         const slug = repoSlug(repo)
-        const [prs, mine, unassigned] = yield* Effect.all(
+        const [prs, mine, unassigned, candidates] = yield* Effect.all(
           [
             // PR pages carry files + reviews; 50 at a time makes GitHub's GraphQL time out (502).
             search(`repo:${slug} is:pr is:open sort:updated-desc`, limit, 20),
             search(`repo:${slug} is:issue is:open assignee:${me} sort:updated-desc`, limit),
-            search(`repo:${slug} is:issue is:open no:assignee sort:updated-desc`, limit)
+            search(`repo:${slug} is:issue is:open no:assignee sort:updated-desc`, limit),
+            // Factory candidates wait for a maintainer however old they are.
+            search(`repo:${slug} is:issue is:open label:"${FACTORY_CANDIDATE_LABEL}" -label:"${FACTORY_LABEL}" sort:created-asc`, limit)
           ],
-          { concurrency: 3 }
+          { concurrency: 4 }
         )
         const seen = new Set<number>()
-        return [...prs, ...mine, ...unassigned].filter((i) => (seen.has(i.number) ? false : (seen.add(i.number), true)))
+        return [...prs, ...mine, ...unassigned, ...candidates].filter((i) => (seen.has(i.number) ? false : (seen.add(i.number), true)))
       })
 
       const fetchHistory = Effect.fnUntraced(function*(options: { readonly repo: Repo; readonly label: string; readonly limit: number }) {
@@ -456,6 +459,7 @@ const IssueNode = Schema.Struct({
   labels: Named,
   assignees: Logins,
   comments: Comments,
+  latest: Schema.optional(Comments),
   reactions: Schema.Struct({ totalCount: Schema.Int }),
   closedByPullRequestsReferences: Schema.NullOr(Links)
 })
@@ -482,6 +486,7 @@ const PrNode = Schema.Struct({
   labels: Named,
   assignees: Logins,
   comments: Comments,
+  latest: Schema.optional(Comments),
   reviews: Schema.Struct({ totalCount: Schema.Int, nodes: Schema.Array(Schema.Struct({ author: Actor, state: Schema.String, submittedAt: Schema.NullOr(Schema.String) })) }),
   reviewDecision: Schema.NullOr(Schema.String),
   mergeStateStatus: Schema.optional(Schema.NullOr(Schema.String)),
@@ -557,6 +562,7 @@ const ISSUE_FRAGMENT = `
     labels(first: 30) { nodes { name } }
     assignees(first: 10) { nodes { login } }
     comments(first: 5) { totalCount nodes { author { login } body createdAt } }
+    latest: comments(last: 3) { totalCount nodes { author { login } body createdAt } }
     reactions { totalCount }
     closedByPullRequestsReferences(first: 10, includeClosedPrs: false) { nodes { number title state createdAt authorAssociation author { login } labels(first: 20) { nodes { name } } isDraft } }
   }`
@@ -569,6 +575,7 @@ const PR_FRAGMENT = `
     labels(first: 30) { nodes { name } }
     assignees(first: 10) { nodes { login } }
     comments(first: 5) { totalCount nodes { author { login } body createdAt } }
+    latest: comments(last: 3) { totalCount nodes { author { login } body createdAt } }
     reviews(last: 20) { totalCount nodes { author { login } state submittedAt } }
     reviewDecision mergeStateStatus
     reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } }
@@ -619,6 +626,18 @@ const toLinks = (kind: TriageItem["kind"], nodes: ReadonlyArray<typeof LinkNode.
       labels: l.labels.nodes.map((x) => x.name)
     }))
 
+/** The first comments (what the item is about) plus the latest few (where it stands, e.g. factory reports), oldest first. */
+const mergeComments = (first: typeof Comments.Type, latest: typeof Comments.Type | undefined) => {
+  const seen = new Set<string>()
+  return [...first.nodes, ...(latest?.nodes ?? [])].flatMap((c) => {
+    const author = c.author?.login ?? "ghost"
+    const key = `${author}|${c.createdAt}`
+    if (seen.has(key)) return []
+    seen.add(key)
+    return [{ author, body: c.body, createdAt: c.createdAt }]
+  })
+}
+
 const toItem = (node: typeof SearchNode.Type): TriageItem | null => {
   if (node.__typename === "Issue") {
     const n = node as typeof IssueNode.Type
@@ -637,7 +656,7 @@ const toItem = (node: typeof SearchNode.Type): TriageItem | null => {
       labels: n.labels.nodes.map((l) => l.name),
       assignees: n.assignees.nodes.map((a) => a.login),
       commentCount: n.comments.totalCount,
-      comments: n.comments.nodes.map((c) => ({ author: c.author?.login ?? "ghost", body: c.body, createdAt: c.createdAt })),
+      comments: mergeComments(n.comments, n.latest),
       reactions: n.reactions.totalCount,
       state: n.state,
       stateReason: n.stateReason,
@@ -662,7 +681,7 @@ const toItem = (node: typeof SearchNode.Type): TriageItem | null => {
       labels: n.labels.nodes.map((l) => l.name),
       assignees: n.assignees.nodes.map((a) => a.login),
       commentCount: n.comments.totalCount,
-      comments: n.comments.nodes.map((c) => ({ author: c.author?.login ?? "ghost", body: c.body, createdAt: c.createdAt })),
+      comments: mergeComments(n.comments, n.latest),
       reactions: 0,
       state: n.state,
       stateReason: null,

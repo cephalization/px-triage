@@ -228,6 +228,7 @@ const apply = Command.make(
     reviewer: Flag.String("reviewer").pipe(Flag.withDescription("Additional reviewer login (repeatable)"), Flag.atLeast(0)),
     labelAdd: Flag.String("add-label").pipe(Flag.withDescription("Additional label to add (repeatable)"), Flag.atLeast(0)),
     when: Flag.Literals("when", ["now", "backlog", "roadmap"]).pipe(Flag.withDescription("Feature scheduling"), Flag.optional),
+    factory: Flag.Boolean("factory").pipe(Flag.withDescription("Bug/feature issues: send to Phoenix's factory (adds the factory label, assigns nobody); refused when the factory would refuse it"), Flag.withDefault(false)),
     template: Flag.String("template").pipe(Flag.withDescription("Comment template id for needs-info / close"), Flag.optional),
     comment: Flag.String("comment").pipe(Flag.withDescription("Comment text (overrides the template)"), Flag.optional),
     commentFile: Flag.File("comment-file", { mustExist: true }).pipe(Flag.withDescription("Read the comment from a file"), Flag.optional),
@@ -248,6 +249,7 @@ const apply = Command.make(
         reviewers: input.reviewer,
         labels: input.labelAdd,
         when: Option.getOrNull(input.when),
+        factory: input.factory,
         template: Option.getOrNull(input.template),
         comment: Option.getOrNull(input.comment) ?? (fileComment ? fileComment.replace(/\s+$/, "") : null),
         propagateLinks: !input.noPropagate,
@@ -261,6 +263,7 @@ const apply = Command.make(
   Command.withExamples([
     { command: "px-triage apply 1234 --accept --json", description: "Take Jev's suggestion with defaults" },
     { command: "px-triage apply 1234 --action bug --assign-me --json", description: "Label as a bug and assign yourself" },
+    { command: "px-triage apply 1234 --accept --factory --json", description: "Take the suggestion and hand the issue to Phoenix's factory" },
     { command: "px-triage apply 1234 --action close --template support --dry-run --json", description: "Preview closing as a support question" }
   ])
 )
